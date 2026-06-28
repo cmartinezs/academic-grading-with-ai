@@ -1,0 +1,8 @@
+automation/ava/.ava-session/
+onboarding/work/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+automation/ava/config.json
+automation/ava/reports/
+exports/publication-input/

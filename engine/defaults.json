@@ -1,0 +1,14 @@
+{
+  "defaults": {
+    "approvalThreshold": 60,
+    "evaluationType": "regular",
+    "grading": {
+      "minGrade": 1,
+      "passingGrade": 4,
+      "maxGrade": 7,
+      "passingPercent": 60,
+      "presentationWeight": 60,
+      "examWeight": 40
+    }
+  }
+}

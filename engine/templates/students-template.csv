@@ -1,0 +1,2 @@
+order,rut,names,lastName,secondLastName,repoUrl,avaUser,fullName
+1,12345678,Nombre,ApellidoPaterno,ApellidoMaterno,https://github.com/usuario/repositorio,,Nombre ApellidoPaterno ApellidoMaterno

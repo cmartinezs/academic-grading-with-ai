@@ -1,0 +1,13 @@
+{
+  "name": "fpy1101-ava-grade-importer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "inspect": "node ava-import.mjs --inspect",
+    "dry-run": "node ava-import.mjs",
+    "import": "node ava-import.mjs --commit"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

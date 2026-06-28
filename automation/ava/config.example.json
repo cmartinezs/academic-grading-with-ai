@@ -1,0 +1,29 @@
+{
+  "gradebookUrl": "REEMPLAZAR_CON_URL_FLEXIBLE_ATTEMPT_GRADING_DE_AVA",
+  "cookieDomain": "campusvirtual.duoc.cl",
+  "evaluationId": "EV1",
+  "timeoutMs": 60000,
+  "windowWidth": 1920,
+  "windowHeight": 1080,
+  "navigationDelayMs": 1200,
+  "saveDelayMs": 1500,
+  "maxStudentScrolls": 80,
+  "conversionPolicy": "exact",
+  "rubricLevels": [
+    { "label": "Muy buen desempeño", "percent": 100 },
+    { "label": "Buen desempeño", "percent": 80 },
+    { "label": "Desempeño aceptable", "percent": 60 },
+    { "label": "Desempeño incipiente", "percent": 30 },
+    { "label": "Desempeño no logrado", "percent": 0 }
+  ],
+  "text": {
+    "studentsTab": "Estudiantes",
+    "generalComments": "Comentarios generales",
+    "rubricHeading": "Rúbrica de calificación",
+    "saveButton": "Guardar"
+  },
+  "selectors": {
+    "studentScroller": "div[style*='overflow'], main",
+    "studentName": "div, span, button"
+  }
+}
