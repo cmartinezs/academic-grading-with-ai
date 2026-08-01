@@ -705,12 +705,20 @@ class LifecycleTest(C1TestCase):
         ctx_b, hash_b, dest_b = self.approve_flow("pub_b", **{"corrects_publication_id": "pub_a"})
         self.assertNotEqual(ctx_a.publication_id, ctx_b.publication_id)
         ledger = ctx_b.ledger()
+
+        def validate_reference(by_pub: str, event_type: str) -> None:
+            dest = ctx_b.sections_root() / SECTION / by_pub
+            self.assertTrue(builder.approved_snapshot_exists(ctx_b, by_pub))
+            self.assertTrue(builder.is_approved_snapshot(ctx_b, by_pub))
+            manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest.get("correctsPublicationId"), "pub_a")
+
         ledger.append(
             "corrected",
             "pub_a",
             actor="ops",
             by_publication_id="pub_b",
-            is_approved=lambda pid: self.approved(ctx_b, pid),
+            validate_reference=validate_reference,
         )
         self.assertEqual(ledger.current_state("pub_a"), "corrected")
 
@@ -756,7 +764,14 @@ class LifecycleTest(C1TestCase):
     def test_terminal_from_published_allowed(self):
         ledger = self._approved_ledger("pub_a")
         ledger.append("published", "pub_a", actor="ops", receipt="r-1")
-        ledger.append("superseded", "pub_a", actor="ops", by_publication_id="pub_b")
+        self.assertEqual(ledger.current_state("pub_a"), "approved")
+        ledger.append(
+            "superseded",
+            "pub_a",
+            actor="ops",
+            by_publication_id="pub_b",
+            validate_reference=lambda _by, _et: None,
+        )
         self.assertEqual(ledger.current_state("pub_a"), "superseded")
 
     def test_correction_reference_must_be_approved(self):
@@ -764,6 +779,142 @@ class LifecycleTest(C1TestCase):
         ctx = self.prep("pub_c")
         with self.assertRaises(GateError):
             builder.build_draft(ctx, corrects_publication_id="pub_ghost")
+
+
+# ---------------------------------------------------------------------------
+# P0 lifecycle: lock-before-read, states, actor rules, lineage validation
+# ---------------------------------------------------------------------------
+
+
+class LifecycleP0Test(C1TestCase):
+    def _ledger(self):
+        return LifecycleLedger(self.roots / "state", SECTION, clock=Clock(env=self.env))
+
+    def test_nonexistent_distinct_from_created(self):
+        ledger = self._ledger()
+        self.assertEqual(ledger.current_state("pub_ghost"), "nonexistent")
+        ledger.append("created", "pub_ghost", actor="system")
+        self.assertEqual(ledger.current_state("pub_ghost"), "created")
+
+    def test_duplicate_created_rejected(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("created", "pub_a", actor="system")
+
+    def test_corrupt_seq_rejected_before_append(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        ledger.append("reviewed", "pub_a", actor="reviewer-a")
+        events = ledger.read_events()
+        events[1]["seq"] = 9
+        ledger.path.write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(LedgerError):
+            ledger.append("approved", "pub_a", actor="approver-a")
+
+    def test_actor_required(self):
+        ledger = self._ledger()
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("created", "pub_a", actor=None)
+
+    def test_actor_must_be_non_email_and_sanitized(self):
+        ledger = self._ledger()
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("created", "pub_a", actor="ops@mail.cl")
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("created", "pub_a", actor="../evil\nactor")
+
+    def test_self_reference_rejected(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        ledger.append("reviewed", "pub_a", actor="reviewer-a")
+        ledger.append("approved", "pub_a", actor="approver-a")
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append(
+                "superseded", "pub_a", actor="ops",
+                by_publication_id="pub_a",
+                validate_reference=lambda _by, _et: None,
+            )
+
+    def test_reference_validation_mandatory(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        ledger.append("reviewed", "pub_a", actor="reviewer-a")
+        ledger.append("approved", "pub_a", actor="approver-a")
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("superseded", "pub_a", actor="ops", by_publication_id="pub_b")
+
+    def test_reference_validation_failure_propagates(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        ledger.append("reviewed", "pub_a", actor="reviewer-a")
+        ledger.append("approved", "pub_a", actor="approver-a")
+
+        def reject(_by, _et):
+            raise InvalidTransitionError("referenced publication is not approved")
+
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append("superseded", "pub_a", actor="ops", by_publication_id="pub_b", validate_reference=reject)
+
+    def test_manifest_lineage_must_match_transition(self):
+        """A transition cannot reference an approved pub whose manifest does not declare the lineage."""
+        ctx_a, _, _ = self.approve_flow("pub_a")
+        ctx_b, _, _ = self.approve_flow("pub_b")  # does NOT declare supersedes pub_a
+        ledger = ctx_a.ledger()
+
+        def validate_reference(by_pub, event_type):
+            dest = ctx_a.sections_root() / SECTION / by_pub
+            manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("supersedesPublicationId") != "pub_a":
+                raise InvalidTransitionError(
+                    f"{by_pub} does not declare supersedesPublicationId=pub_a"
+                )
+
+        with self.assertRaises(InvalidTransitionError):
+            ledger.append(
+                "superseded", "pub_a", actor="ops",
+                by_publication_id="pub_b",
+                validate_reference=validate_reference,
+            )
+
+    def test_published_is_receipt_not_state(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_a", actor="system")
+        ledger.append("reviewed", "pub_a", actor="reviewer-a")
+        ledger.append("approved", "pub_a", actor="approver-a")
+        ledger.append("published", "pub_a", actor="ops", receipt="rcpt-1")
+        self.assertEqual(ledger.current_state("pub_a"), "approved")
+        self.assertTrue(ledger.has_approved("pub_a"))
+        receipts = [e for e in ledger.read_events() if e["event"] == "published"]
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]["receipt"], "rcpt-1")
+
+    def test_concurrent_appends_same_publication(self):
+        ledger = self._ledger()
+        ledger.append("created", "pub_x", actor="system")
+        ledger.append("reviewed", "pub_x", actor="reviewer-a")
+        ledger.append("approved", "pub_x", actor="approver-a")
+        errors: list[Exception] = []
+
+        def publish():
+            try:
+                ledger.append("published", "pub_x", actor="ops", receipt="r-x")
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=publish) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        events = ledger.read_events()
+        seqs = [int(event["seq"]) for event in events]
+        self.assertEqual(len(seqs), len(set(seqs)), "seqs must be unique under concurrency")
+        self.assertEqual(max(seqs), len(events))
 
 
 # ---------------------------------------------------------------------------

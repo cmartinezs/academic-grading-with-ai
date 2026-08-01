@@ -79,7 +79,13 @@ def run_e2e() -> None:
         assert dest.is_dir(), "approved snapshot must exist"
         assert builder.verify(ctx, "approved").passed()
         ctx.ledger().append("published", "pub_e2e01", actor="ops", receipt="e2e-rcpt")
-        assert ctx.ledger().current_state("pub_e2e01") == "published"
+        assert ctx.ledger().has_approved("pub_e2e01")
+        assert ctx.ledger().current_state("pub_e2e01") == "approved"
+        events = ctx.ledger().read_events()
+        assert any(
+            e["event"] == "published" and e.get("receipt") == "e2e-rcpt"
+            for e in events
+        ), "published receipt must be recorded"
         assert compat.generate(ctx) != []
         print(f"E2E OK: {ctx.publication_id} -> {result.content_hash}")
     finally:

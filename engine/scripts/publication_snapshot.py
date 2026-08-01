@@ -99,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_approve.add_argument("--confirm", choices=["approve"], help="Explicit confirmation required.")
 
     p_transition = sub.add_parser("transition", help="Append a lifecycle event to the ledger.")
-    p_transition.add_argument("--event", choices=["published", "superseded", "corrected", "revoked"], required=True)
-    p_transition.add_argument("--actor", help="Audit id performing the transition.")
+    p_transition.add_argument("--event", choices=["created", "reviewed", "approved", "published", "superseded", "corrected", "revoked"], required=True)
+    p_transition.add_argument("--actor", required=True, help="Audit id performing the transition (not an email).")
     p_transition.add_argument("--receipt", help="Receipt reference (required for published).")
     p_transition.add_argument("--by-publication", help="Referenced approved publication (required for superseded/corrected).")
     p_transition.add_argument("--reason", help="Optional reason recorded in the ledger.")
@@ -189,6 +189,9 @@ def cmd_approve(args) -> int:
 
 
 def cmd_transition(args) -> int:
+    from publication import verify as publication_verify
+    from publication.jsonutil import read_json
+
     ctx = make_context(args)
     if args.publication is None:
         print("transition requires --publication.", file=sys.stderr)
@@ -200,6 +203,29 @@ def cmd_transition(args) -> int:
         raise ConfirmationRequiredError("published requires --receipt.")
     if args.event in ("superseded", "corrected") and not args.by_publication:
         raise ConfirmationRequiredError(f"{args.event} requires --by-publication.")
+
+    def validate_reference(by_publication_id: str, event_type: str) -> None:
+        from publication.errors import InvalidTransitionError
+
+        if not builder.approved_snapshot_exists(ctx, by_publication_id) or not builder.is_approved_snapshot(ctx, by_publication_id):
+            raise InvalidTransitionError(
+                f"{event_type} references {by_publication_id!r} which is not approved."
+            )
+        dest = ctx.sections_root() / ctx.section_id / by_publication_id
+        report = publication_verify.verify_snapshot(dest, ctx.section_id, by_publication_id, immutable=True)
+        if not report.passed():
+            raise InvalidTransitionError(
+                f"{event_type} references {by_publication_id!r} which fails verification."
+            )
+        manifest = read_json(dest / "manifest.json")
+        declared = manifest.get("supersedesPublicationId" if event_type == "superseded" else "correctsPublicationId")
+        if declared != args.publication:
+            raise InvalidTransitionError(
+                f"{event_type} references {by_publication_id!r} whose manifest declares "
+                f"{'supersedes' if event_type == 'superseded' else 'corrects'}PublicationId="
+                f"{declared!r}, expected {args.publication!r}."
+            )
+
     ledger = ctx.ledger()
     event = ledger.append(
         args.event,
@@ -208,8 +234,7 @@ def cmd_transition(args) -> int:
         receipt=args.receipt,
         by_publication_id=args.by_publication,
         reason=args.reason,
-        is_approved=lambda pid: builder.approved_snapshot_exists(ctx, pid)
-        and builder.is_approved_snapshot(ctx, pid),
+        validate_reference=validate_reference,
     )
     print(f"Event #{event['seq']}: {event['event']} for {event['publicationId']}.")
     return 0
