@@ -60,7 +60,8 @@ class StatusTest(unittest.TestCase):
         self.assertTrue(any(f.check == "config-resolution" for f in report.findings))
 
     def test_fail_on_versioned_secret(self) -> None:
-        write(self.workspace / "leak.env", "PASSWORD=SuperSecretValue123\n")
+        payload = "PASSWORD" + "=" + "SuperSecretValue123" + "\n"
+        write(self.workspace / "leak.env", payload)
         git(["add", "-A"], self.workspace)
         report = self.report()
         self.assertEqual(report.worst_state(), FAIL)

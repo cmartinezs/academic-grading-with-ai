@@ -1,41 +1,31 @@
 {
-  "version": 1,
-  "comment": "Explicit allow-list for approved synthetic fixtures, fictional onboarding material and example templates. Every exception is specific, justified and versioned.",
+  "version": 2,
+  "comment": "Explicit allow-list for approved synthetic fixtures, fictional onboarding material and example templates. No wildcard rule entries are permitted and high-confidence rules (private keys, service tokens, .env files) can never be allow-listed.",
   "entries": [
     {
       "path": "engine/c0/fixtures/synthetic/**",
-      "rules": ["*"],
+      "rules": ["chilean-rut", "email", "roster-file", "submissions-dir", "results-dir"],
       "reason": "Approved synthetic C0 fixtures: zero real data, reserved example domains only."
     },
     {
       "path": "onboarding/**",
-      "rules": ["*"],
+      "rules": ["chilean-rut", "email"],
       "reason": "Fictional onboarding practice material with reserved example domains."
     },
     {
       "path": "automation/ava/config.example.json",
-      "rules": ["*"],
+      "rules": ["secret-assignment"],
       "reason": "Example AVA configuration with placeholder values only."
     },
     {
       "path": "**/.env.example",
-      "rules": ["*"],
+      "rules": ["secret-assignment"],
       "reason": "Example environment template without real secrets."
     },
     {
       "path": "engine/c0/tests/**",
       "rules": ["chilean-rut", "email"],
       "reason": "Synthetic tests use fictional RUT/email-shaped identifiers; secret detection stays active."
-    },
-    {
-      "path": "engine/c0/tests/test_scanner.py",
-      "rules": ["*"],
-      "reason": "Unit test must embed synthetic secret-shaped values to exercise the detection rules; fictional placeholders only."
-    },
-    {
-      "path": "engine/c0/tests/test_status.py",
-      "rules": ["*"],
-      "reason": "Unit test embeds a fictional secret-shaped literal to exercise the versionable-private-data FAIL gate."
     }
   ]
 }

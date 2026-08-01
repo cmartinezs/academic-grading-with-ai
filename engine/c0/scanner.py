@@ -17,13 +17,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-from c0.util import mask_value
+from c0.util import mask_path, mask_value
 
 ALLOWLIST_PATH = Path(__file__).resolve().parent / "allowlist.json"
 
 SEVERITY_BLOCK = "BLOCK"
 SEVERITY_REVIEW = "REVIEW"
 SEVERITY_INFO = "INFO"
+
+MAX_CONTENT_SCAN_BYTES = 2 * 1024 * 1024  # content larger than this is not scanned
+BINARY_SNIFF_BYTES = 8000  # first N bytes probed for a NUL byte
+
+# High-confidence rules that can never be suppressed by the allow-list: private keys
+# and real service tokens must always fail.
+NON_ALLOWLISTABLE_RULES = frozenset(
+    {
+        "private-key-block",
+        "private-key-file",
+        "env-file",
+        "aws-access-key",
+        "github-token",
+        "stripe-key",
+        "slack-token",
+        "google-api-key",
+    }
+)
 
 RESERVED_EXAMPLE_DOMAINS = {
     "example.test",
@@ -73,10 +91,13 @@ class ScanFinding:
     message: str
     masked: Optional[str] = None
 
+    def display_path(self) -> str:
+        return mask_path(self.path)
+
     def to_dict(self) -> dict:
         return {
             "severity": self.severity,
-            "path": self.path,
+            "path": self.display_path(),
             "rule": self.rule,
             "message": self.message,
             "masked": self.masked,
@@ -116,14 +137,22 @@ def glob_match(pattern: str, path: str) -> bool:
     return match(pattern_parts, path_parts)
 
 
+class InvalidAllowlistError(Exception):
+    """The allow-list violates the rules (wildcard rules or high-confidence rules)."""
+
+
 class Scanner:
     def __init__(self, allowlist: Optional[list[dict]] = None):
         self.allowlist = allowlist if allowlist is not None else load_allowlist()
 
     def _allowed(self, rel_path: str, rule: str) -> Optional[dict]:
+        if rule in NON_ALLOWLISTABLE_RULES:
+            return None
         for entry in self.allowlist:
-            allowed_rules = entry.get("rules") or ["*"]
-            if glob_match(entry["path"], rel_path) and (rule in allowed_rules or "*" in allowed_rules):
+            allowed_rules = entry.get("rules") or []
+            if "*" in allowed_rules:
+                continue
+            if glob_match(entry["path"], rel_path) and rule in allowed_rules:
                 return entry
         return None
 
@@ -133,12 +162,19 @@ class Scanner:
         return ScanFinding(severity, rel_path, rule, message, masked)
 
     def scan_bytes(self, rel_path: str, content: bytes) -> list[ScanFinding]:
-        findings: list[ScanFinding] = []
+        return self._content_findings(rel_path, content)
+
+    def _content_findings(self, rel_path: str, content: bytes) -> list[ScanFinding]:
+        if len(content) > MAX_CONTENT_SCAN_BYTES:
+            return []
+        if b"\x00" in content[:BINARY_SNIFF_BYTES]:
+            return []
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             text = content.decode("latin-1")
 
+        findings: list[ScanFinding] = []
         for line in text.splitlines():
             for match in PATTERN_SECRET_ASSIGNMENT.finditer(line):
                 finding = self._finding(
@@ -180,7 +216,7 @@ class Scanner:
                 if is_reserved_domain(domain):
                     continue
                 finding = self._finding(
-                    SEVERITY_REVIEW,
+                    SEVERITY_BLOCK,
                     rel_path,
                     "email",
                     "Email address detected.",
@@ -220,7 +256,12 @@ class Scanner:
             content = path.read_bytes()
         except OSError:
             return findings
-        findings.extend(self.scan_bytes(rel_path, content))
+        findings.extend(self._content_findings(rel_path, content))
+        return findings
+
+    def scan_blob(self, rel_path: str, content: bytes) -> list[ScanFinding]:
+        findings = self.scan_path(rel_path, Path(rel_path))
+        findings.extend(self._content_findings(rel_path, content))
         return findings
 
     def scan_files(self, files: Iterable[tuple[str, Path]]) -> list[ScanFinding]:
@@ -229,9 +270,28 @@ class Scanner:
             findings.extend(self.scan_file(rel_path, path))
         return findings
 
+    def scan_blobs(self, files: Iterable[tuple[str, bytes]]) -> list[ScanFinding]:
+        findings: list[ScanFinding] = []
+        for rel_path, content in files:
+            findings.extend(self.scan_blob(rel_path, content))
+        return findings
 
-def load_allowlist() -> list[dict]:
-    if not ALLOWLIST_PATH.exists():
+
+def load_allowlist(path: Optional[Path] = None) -> list[dict]:
+    allowlist_path = Path(path) if path is not None else ALLOWLIST_PATH
+    if not allowlist_path.exists():
         return []
-    payload = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
-    return payload.get("entries", [])
+    payload = json.loads(allowlist_path.read_text(encoding="utf-8"))
+    entries = payload.get("entries", [])
+    for entry in entries:
+        rules = entry.get("rules") or []
+        if not isinstance(rules, list) or not rules:
+            raise InvalidAllowlistError(f"Allow-list entry must declare explicit rules: {entry.get('path')}")
+        if "*" in rules:
+            raise InvalidAllowlistError(f"Wildcard rule '*' is not allowed in the allow-list: {entry.get('path')}")
+        for rule in rules:
+            if rule in NON_ALLOWLISTABLE_RULES:
+                raise InvalidAllowlistError(
+                    f"Rule '{rule}' is high-confidence and cannot be allow-listed: {entry.get('path')}"
+                )
+    return entries

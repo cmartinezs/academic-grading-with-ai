@@ -19,14 +19,21 @@ sys.path.insert(0, str(ROOT / "engine"))
 
 from c0 import git  # noqa: E402
 from c0.scanner import Scanner, SEVERITY_BLOCK, SEVERITY_REVIEW  # noqa: E402
+from c0.util import mask_path  # noqa: E402
 
 
 def tracked_files(repo: Path) -> list[tuple[str, Path]]:
     return [(path.relative_to(repo).as_posix(), path) for path in git.tracked_files(repo) if path.is_file()]
 
 
-def staged_files(repo: Path) -> list[tuple[str, Path]]:
-    return [(path.relative_to(repo).as_posix(), path) for path in git.staged_files(repo) if path.is_file()]
+def staged_blob_targets(repo: Path) -> list[tuple[str, bytes]]:
+    targets: list[tuple[str, bytes]] = []
+    for rel in git.staged_files(repo):
+        rel_path = rel.relative_to(repo).as_posix() if isinstance(rel, Path) else rel
+        content = git.blob_content(repo, rel_path)
+        if content is not None:
+            targets.append((rel_path, content))
+    return targets
 
 
 def path_files(repo: Path, directory: Path) -> list[tuple[str, Path]]:
@@ -54,26 +61,29 @@ def main() -> int:
     args = parser.parse_args()
 
     workspace = Path(args.workspace).resolve() if args.workspace else ROOT
-    targets: list[tuple[str, Path]] = []
+    path_targets: list[tuple[str, Path]] = []
+    blob_targets: list[tuple[str, bytes]] = []
 
     if args.staged:
-        targets.extend(staged_files(workspace))
+        blob_targets.extend(staged_blob_targets(workspace))
     if args.paths:
         for raw in args.paths:
             path = Path(raw)
             if not path.is_absolute():
                 path = (Path.cwd() / path).resolve()
             if path.is_dir():
-                targets.extend(path_files(workspace, path))
+                path_targets.extend(path_files(workspace, path))
             elif path.is_file():
                 rel = path.relative_to(workspace).as_posix() if path.is_relative_to(workspace) else path.as_posix()
-                targets.append((rel, path))
+                path_targets.append((rel, path))
     if args.tracked or (not args.staged and not args.paths):
-        targets.extend(tracked_files(workspace))
+        path_targets.extend(tracked_files(workspace))
 
     scanner = Scanner(allowlist=[] if args.no_allowlist else None)
-    findings = scanner.scan_files(targets)
+    findings = scanner.scan_files(path_targets)
+    findings.extend(scanner.scan_blobs(blob_targets))
 
+    scanned_count = len(path_targets) + len(blob_targets)
     block_count = sum(1 for finding in findings if finding.severity == SEVERITY_BLOCK)
     review_count = sum(1 for finding in findings if finding.severity == SEVERITY_REVIEW)
 
@@ -82,7 +92,7 @@ def main() -> int:
             json.dumps(
                 {
                     "workspace": str(workspace),
-                    "scanned": len(targets),
+                    "scanned": scanned_count,
                     "block": block_count,
                     "review": review_count,
                     "findings": [finding.to_dict() for finding in findings],
@@ -94,10 +104,10 @@ def main() -> int:
     else:
         print(f"# PII/secret scan")
         print(f"Workspace: {workspace}")
-        print(f"Scanned: {len(targets)} files | BLOCK={block_count} REVIEW={review_count}")
+        print(f"Scanned: {scanned_count} files | BLOCK={block_count} REVIEW={review_count}")
         for finding in findings:
             detail = f" (masked: {finding.masked})" if finding.masked else ""
-            print(f"[{finding.severity}] {finding.path} ({finding.rule}): {finding.message}{detail}")
+            print(f"[{finding.severity}] {mask_path(finding.path)} ({finding.rule}): {finding.message}{detail}")
         if block_count:
             print("Scan FAILED: BLOCK findings present.")
         elif review_count and args.strict:
