@@ -1,0 +1,26 @@
+name: C1 publication snapshot gates
+
+on:
+  push:
+    branches: [master, feat/c1-publication-snapshot-lifecycle]
+  pull_request:
+
+jobs:
+  c1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C1 pinned dependency
+        run: |
+          python3 -m pip install --user -r engine/publication/requirements.txt
+          python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
+
+      - name: C1 unit, contract, integration and E2E suite
+        run: ./scripts/publication-snapshot.sh test
+
+      - name: C0 regression suite
+        run: ./scripts/c0-test.sh
+
+      - name: Tracked scan (strict)
+        run: ./scripts/c0-scan.sh --tracked --strict
