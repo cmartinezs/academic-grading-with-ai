@@ -692,3 +692,71 @@ def is_approved_snapshot(ctx: BuildContext, publication_id: str) -> bool:
         return False
     manifest = read_json(dest / "manifest.json")
     return manifest.get("status") == "approved"
+
+
+def _writable_files(root: Path) -> list[str]:
+    import stat
+
+    writable = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if stat.S_IMODE(path.stat().st_mode) & 0o222:
+            writable.append(path.relative_to(root).as_posix())
+    return writable
+
+
+def reconcile(ctx: BuildContext) -> list[str]:
+    """Idempotently reconcile approved snapshots with the lifecycle ledger.
+
+    Handles crash states after promotion (P0 recovery, item 49-51):
+
+    - a snapshot whose files are writable (crash after rename, before chmod)
+      has read-only permissions re-applied;
+    - a snapshot missing its ``approved`` ledger event (crash after promotion,
+      before the append) gets the missing academic events appended;
+    - a promoted snapshot is NEVER deleted to fake a rollback: integrity
+      failures are reported, not repaired by removal.
+
+    Running reconcile twice produces no further changes (idempotent).
+    """
+    actions: list[str] = []
+    section_root = ctx.sections_root() / ctx.section_id
+    if not section_root.is_dir():
+        return actions
+    ledger = ctx.ledger()
+    for dest in sorted(path for path in section_root.iterdir() if path.is_dir()):
+        manifest_path = dest / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        manifest = read_json(manifest_path)
+        if manifest.get("status") != "approved":
+            continue
+        pub = manifest.get("publicationId")
+        if not pub:
+            continue
+
+        report = verify_snapshot(dest, ctx.section_id, pub, immutable=False)
+        if not report.passed():
+            actions.append(f"integrity-failed:{pub}")
+            continue
+
+        writable = _writable_files(dest)
+        if writable:
+            _make_read_only(dest)
+            actions.append(f"readonly-restored:{pub}")
+
+        state = ledger.current_state(pub)
+        if state == "nonexistent":
+            ledger.append("created", pub, actor="system")
+            ledger.append("reviewed", pub, actor="reconcile")
+            ledger.append("approved", pub, actor="reconcile")
+            actions.append(f"ledger-reconciled:{pub}")
+        elif state == "created":
+            ledger.append("reviewed", pub, actor="reconcile")
+            ledger.append("approved", pub, actor="reconcile")
+            actions.append(f"ledger-reconciled:{pub}")
+        elif state == "reviewed":
+            ledger.append("approved", pub, actor="reconcile")
+            actions.append(f"ledger-reconciled:{pub}")
+    return actions

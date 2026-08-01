@@ -208,6 +208,12 @@ class C1TestCase(unittest.TestCase):
         dest = builder.approve_draft(ctx, result.review_hash, "approver-a", "approve", content_hash=result.content_hash)
         return ctx, result.content_hash, dest
 
+    def reviewed_flow(self, pub: str = "pub_a", section: str = SECTION, ruts=(RUT_A, RUT_B), **kwargs):
+        ctx = self.prep(pub, section=section, ruts=ruts)
+        result = builder.build_draft(ctx, **kwargs)
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        return ctx, result.review_hash, result.content_hash
+
     def approved(self, ctx, pub) -> bool:
         return builder.approved_snapshot_exists(ctx, pub) and builder.is_approved_snapshot(ctx, pub)
 
@@ -1164,6 +1170,77 @@ class CompatP0Test(C1TestCase):
             self.assertEqual(row["grade"], source["grade"])
             self.assertEqual(row["status"], source["status"])
             self.assertEqual(row["studentId"], source["studentId"])
+
+
+# ---------------------------------------------------------------------------
+# P0 recovery: crash states, idempotent reconciliation, never-delete
+# ---------------------------------------------------------------------------
+
+
+class RecoveryP0Test(C1TestCase):
+    def test_crash_after_rename_before_chmod(self):
+        ctx, review_hash, content_hash = self.reviewed_flow("pub_a")
+        dest = ctx.destination_dir()
+        with mock.patch.object(builder, "_make_read_only", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                builder.approve_draft(ctx, review_hash, "approver-a", "approve", content_hash=content_hash)
+        self.assertTrue(dest.exists(), "snapshot promoted before the crash")
+        self.assertTrue(builder._writable_files(dest), "files left writable")
+        self.assertNotEqual(ctx.ledger().current_state("pub_a"), "approved")
+
+        actions = builder.reconcile(ctx)
+        self.assertTrue(any("readonly-restored" in a for a in actions), actions)
+        self.assertTrue(any("ledger-reconciled" in a for a in actions), actions)
+        self.assertFalse(builder._writable_files(dest))
+        self.assertEqual(ctx.ledger().current_state("pub_a"), "approved")
+
+    def test_crash_after_chmod_before_approved_append(self):
+        ctx, review_hash, content_hash = self.reviewed_flow("pub_a")
+        dest = ctx.destination_dir()
+        real_append = LifecycleLedger.append
+
+        def crash_on_approved(self, event_type, publication_id, **kwargs):
+            if event_type == "approved":
+                raise RuntimeError("crash before ledger append")
+            return real_append(self, event_type, publication_id, **kwargs)
+
+        with mock.patch.object(LifecycleLedger, "append", crash_on_approved):
+            with self.assertRaises(RuntimeError):
+                builder.approve_draft(ctx, review_hash, "approver-a", "approve", content_hash=content_hash)
+        self.assertTrue(dest.exists())
+        self.assertFalse(builder._writable_files(dest))
+        self.assertEqual(ctx.ledger().current_state("pub_a"), "reviewed")
+
+        actions = builder.reconcile(ctx)
+        self.assertTrue(any("ledger-reconciled" in a for a in actions), actions)
+        self.assertEqual(ctx.ledger().current_state("pub_a"), "approved")
+
+    def test_reconcile_is_idempotent(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        first = builder.reconcile(ctx)
+        second = builder.reconcile(ctx)
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
+
+    def test_reconcile_never_deletes_promoted_snapshot(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        ledger = ctx.ledger()
+        ledger.append("revoked", "pub_a", actor="ops", reason="irregular")
+        before = set(p.name for p in dest.parent.iterdir())
+        actions = builder.reconcile(ctx)
+        after = set(p.name for p in dest.parent.iterdir())
+        self.assertTrue(dest.exists(), "promoted snapshot must survive revocation")
+        self.assertEqual(before, after)
+        self.assertTrue(all(not a.startswith("deleted") for a in actions), actions)
+
+    def test_reconcile_reports_integrity_failure_without_deleting(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        path = dest / "canonical/results.json"
+        os.chmod(path, 0o600)
+        path.write_text('{"results": []}\n', encoding="utf-8")
+        actions = builder.reconcile(ctx)
+        self.assertTrue(any("integrity-failed:pub_a" in a for a in actions), actions)
+        self.assertTrue(dest.exists(), "integrity failure must not delete the snapshot")
 
 
 if __name__ == "__main__":
