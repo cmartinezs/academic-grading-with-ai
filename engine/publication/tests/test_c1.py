@@ -100,6 +100,43 @@ def force_rmtree(root: Path) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# multiprocess concurrency workers (must be module-level for pickling)
+# ---------------------------------------------------------------------------
+
+
+def _mp_dispatch(kind: str, base: str, section: str, pub: str, env: dict, review_hash: str | None):
+    from publication import builder
+    from publication.clock import Clock
+
+    ctx = builder.BuildContext.resolve(
+        base, section, publication_id=pub, env=env, clock=Clock(env=env),
+        legacy_source=str(Path(base) / "legacy"),
+    )
+    try:
+        if kind == "build":
+            builder.build_draft(ctx)
+        elif kind == "review":
+            builder.review_draft(ctx, review_hash, "reviewer-a")
+        elif kind == "approve":
+            builder.approve_draft(ctx, review_hash, "approver-a", "approve")
+        elif kind == "discard":
+            builder.discard_staging(ctx)
+        else:
+            raise ValueError(f"unknown kind: {kind}")
+        return ("ok", None)
+    except Exception as exc:  # noqa: BLE001
+        return (type(exc).__name__, str(exc))
+
+
+def _run_workers(jobs) -> list:
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("fork")
+    with ctx.Pool(len(jobs)) as pool:
+        return pool.starmap(_mp_dispatch, jobs)
+
+
 class C1TestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.base = Path(tempfile.mkdtemp(prefix="c1-test-"))
@@ -727,6 +764,90 @@ class LifecycleTest(C1TestCase):
         ctx = self.prep("pub_c")
         with self.assertRaises(GateError):
             builder.build_draft(ctx, corrects_publication_id="pub_ghost")
+
+
+# ---------------------------------------------------------------------------
+# P0 concurrency: per-publication lock serializes mutations (P0 items 10-14)
+# ---------------------------------------------------------------------------
+
+
+class ConcurrencyTest(C1TestCase):
+    def _job(self, kind: str, pub: str, review_hash: str | None = None) -> tuple:
+        return (
+            kind,
+            str(self.base),
+            SECTION,
+            pub,
+            {**self.env},
+            review_hash,
+        )
+
+    def _assert_no_partial_destination(self, ctx, pub: str) -> None:
+        """The destination is either fully present and verified, or absent."""
+        dest = ctx.sections_root() / SECTION / pub
+        if dest.exists():
+            report = builder.verify(ctx, "approved")
+            self.assertTrue(report.passed(), [f.message for f in report.findings])
+
+    def test_concurrent_builds_same_publication(self):
+        self.ensure_identity((RUT_A, RUT_B))
+        pub = "pub_conc"
+        results = _run_workers(
+            [self._job("build", pub), self._job("build", pub)]
+        )
+        kinds = [kind for kind, _ in results]
+        self.assertEqual(sorted(kinds), ["StagingExistsError", "ok"])
+        ctx = self.ctx(pub)
+        report = builder.verify(ctx, "staging")
+        self.assertTrue(report.passed(), [f.message for f in report.findings])
+
+    def test_concurrent_approve_approve(self):
+        self.ensure_identity((RUT_A, RUT_B))
+        ctx_b = self.prep("pub_conc2")
+        result = builder.build_draft(ctx_b)
+        builder.review_draft(ctx_b, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        results = _run_workers(
+            [self._job("approve", "pub_conc2", result.review_hash), self._job("approve", "pub_conc2", result.review_hash)]
+        )
+        kinds = sorted(kind for kind, _ in results)
+        self.assertIn("ok", kinds)
+        self.assertEqual(len([k for k in kinds if k == "ok"]), 1)
+        self._assert_no_partial_destination(ctx_b, "pub_conc2")
+        ledger = ctx_b.ledger()
+        approved_events = [e for e in ledger.read_events() if e["event"] == "approved" and e["publicationId"] == "pub_conc2"]
+        self.assertEqual(len(approved_events), 1, "double approval must be impossible")
+
+    def test_concurrent_review_approve(self):
+        self.ensure_identity((RUT_A, RUT_B))
+        ctx = self.ctx("pub_conc3")
+        result = builder.build_draft(ctx)
+        results = _run_workers(
+            [self._job("review", "pub_conc3", result.review_hash), self._job("approve", "pub_conc3", result.review_hash)]
+        )
+        dest = ctx.sections_root() / SECTION / "pub_conc3"
+        staging = ctx.staging_dir()
+        if dest.exists():
+            self.assertTrue(builder.verify(ctx, "approved").passed())
+            self.assertFalse(staging.exists())
+        else:
+            self.assertTrue(staging.is_dir())
+            self.assertTrue(builder.verify(ctx, "staging").passed())
+
+    def test_concurrent_discard_approve(self):
+        self.ensure_identity((RUT_A, RUT_B))
+        ctx = self.ctx("pub_conc4")
+        result = builder.build_draft(ctx)
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        results = _run_workers(
+            [self._job("discard", "pub_conc4"), self._job("approve", "pub_conc4", result.review_hash)]
+        )
+        dest = ctx.sections_root() / SECTION / "pub_conc4"
+        staging = ctx.staging_dir()
+        if dest.exists():
+            self.assertTrue(builder.verify(ctx, "approved").passed())
+            self.assertFalse(staging.exists())
+        else:
+            self.assertFalse(staging.exists(), "staging must not be left behind after discard/approve race")
 
 
 # ---------------------------------------------------------------------------

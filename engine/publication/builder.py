@@ -46,6 +46,7 @@ from .jsonutil import (
 )
 from .legacy import load_legacy_export, require_course_matches
 from .lifecycle import LifecycleLedger
+from .locking import publication_lock
 from .schemas import SCHEMA_VERSION
 from .verify import VerifyReport, verify_snapshot
 
@@ -226,11 +227,12 @@ def promote(ctx: BuildContext) -> Path:
 
 
 def discard_staging(ctx: BuildContext) -> bool:
-    staging = ctx.staging_dir()
-    if not staging.exists():
-        return False
-    shutil.rmtree(staging)
-    return True
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        staging = ctx.staging_dir()
+        if not staging.exists():
+            return False
+        shutil.rmtree(staging)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +372,21 @@ def build_draft(
     supersedes_publication_id: Optional[str] = None,
     corrects_publication_id: Optional[str] = None,
 ) -> BuildResult:
-    """Build a draft snapshot in staging. Never promotes. Prints contentHash."""
+    """Build a draft snapshot in staging. Never promotes. Prints contentHash.
+
+    Runs under the per-(section, publication) lock so concurrent operations on
+    the same publication cannot interleave writes to staging.
+    """
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        return _build_draft_locked(ctx, dry_run, supersedes_publication_id, corrects_publication_id)
+
+
+def _build_draft_locked(
+    ctx: BuildContext,
+    dry_run: bool = False,
+    supersedes_publication_id: Optional[str] = None,
+    corrects_publication_id: Optional[str] = None,
+) -> BuildResult:
     if ctx.destination_dir().exists():
         raise ImmutableSnapshotError(
             f"An approved snapshot already exists for {ctx.publication_id}; "
@@ -507,6 +523,17 @@ def review_draft(
     dry_run: bool = False,
 ) -> str:
     """Write a review bound to the exact review hash. Never promotes."""
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        return _review_draft_locked(ctx, review_hash_value, reviewer, content_hash=content_hash, dry_run=dry_run)
+
+
+def _review_draft_locked(
+    ctx: BuildContext,
+    review_hash_value: str,
+    reviewer: str,
+    content_hash: Optional[str] = None,
+    dry_run: bool = False,
+) -> str:
     if not reviewer or "@" in reviewer:
         raise PublicationError("reviewer must be a non-email audit id.")
     staging = ctx.staging_dir()
@@ -577,6 +604,17 @@ def approve_draft(
     content_hash: Optional[str] = None,
 ) -> Path:
     """Approve an exact-review-hash reviewed draft, finalize the manifest and promote atomically."""
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        return _approve_draft_locked(ctx, review_hash_value, approver, confirmation, content_hash=content_hash)
+
+
+def _approve_draft_locked(
+    ctx: BuildContext,
+    review_hash_value: str,
+    approver: str,
+    confirmation: str,
+    content_hash: Optional[str] = None,
+) -> Path:
     if not approver or "@" in approver:
         raise PublicationError("approver must be a non-email audit id.")
     if confirmation != "approve":
