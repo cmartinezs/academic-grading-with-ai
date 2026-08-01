@@ -1069,7 +1069,8 @@ class CompatTest(C1TestCase):
         ctx, content_hash, dest = self.approve_flow("pub_a")
         written = compat.generate(ctx, update_legacy_aliases=True)
         self.assertIn("course/results.json", written)
-        self.assertIn("legacy/grades.json", written)
+        self.assertIn("legacy/course/results.json", written)
+        self.assertIn("legacy/PROVENANCE.json", written)
         view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
         envelope = json.loads((view_root / "grades.json").read_text(encoding="utf-8"))
         self.assertEqual(envelope["sourcePublicationId"], "pub_a")
@@ -1144,7 +1145,12 @@ class CompatP0Test(C1TestCase):
         )
         self.assertNotIn("content", results_alias, "alias must be bare content")
         self.assertNotIn("sourcePublicationId", results_alias)
-        self.assertIn("results", results_alias)
+        self.assertIn("items", results_alias, "legacy consumers read an 'items' wrapper")
+        for row in results_alias["items"]:
+            self.assertIsNone(row["resultPath"], "private evidence paths are never reproduced")
+            self.assertNotEqual(row["studentId"], RUT_A, "opaque ids only, never RUTs")
+            for key in compat.LEGACY_RESULT_KEYS:
+                self.assertIn(key, row)
         provenance = json.loads(
             (alias_root / "PROVENANCE.json").read_text(encoding="utf-8")
         )
@@ -1156,20 +1162,21 @@ class CompatP0Test(C1TestCase):
         ctx, content_hash, dest = self.approve_flow("pub_a")
         compat.generate(ctx, update_legacy_aliases=True)
         alias_root = compat.legacy_alias_dir(ctx, SECTION)
-        aliased_results = json.loads(
+        aliased = json.loads(
             (alias_root / "course/results.json").read_text(encoding="utf-8")
-        )["results"]
+        )
         canonical = json.loads(
             (dest / "canonical/results.json").read_text(encoding="utf-8")
         )["results"]
-        by_attempt = {r["attemptId"]: r for r in canonical}
-        self.assertEqual(len(aliased_results), len(canonical))
-        for row in aliased_results:
-            source = by_attempt[row["attemptId"]]
+        by_key = {(r["studentId"], r["assessmentId"], r["form"]): r for r in canonical}
+        self.assertEqual(len(aliased["items"]), len(canonical))
+        for row in aliased["items"]:
+            source = by_key[(row["studentId"], row["evaluationId"], row["form"])]
             self.assertEqual(row["score"], source["score"])
             self.assertEqual(row["grade"], source["grade"])
             self.assertEqual(row["status"], source["status"])
             self.assertEqual(row["studentId"], source["studentId"])
+            self.assertEqual(row["ies"], source["components"])
 
 
 # ---------------------------------------------------------------------------

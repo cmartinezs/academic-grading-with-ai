@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import statistics
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -58,6 +59,9 @@ _PATH_ONLY_RULES = frozenset(
 # gate_privacy formats content findings as "<severity> <rule>: <message>".
 _RE_RULE = re.compile(r"\b(?:BLOCK|REVIEW|INFO)\s+([a-z0-9-]+):")
 
+LEGACY_RESULT_KEYS = ("studentId", "evaluationId", "form", "status", "score", "grade", "resultPath", "finalFeedback", "ies")
+LEGACY_STUDENT_KEYS = ("id", "name", "rut", "forms", "summary")
+LEGACY_EVALUATION_KEYS = ("id", "title", "type", "date", "weight", "forms", "summary", "ieSummary", "performanceLevels")
 
 
 def _content_findings(report) -> list[str]:
@@ -192,6 +196,168 @@ def build_views(canonical: dict[str, dict]) -> dict[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+def _legacy_forms_for(student_id: str, results: list[dict]) -> list[str]:
+    forms = {
+        row.get("form")
+        for row in results
+        if row.get("studentId") == student_id and row.get("form")
+    }
+    return sorted(forms)
+
+
+def _legacy_course_summary(results: list[dict], student_count: int, evaluation_count: int, approval_threshold: float) -> dict:
+    """Legacy-shaped course summary (mirrors the legacy export contract)."""
+    evaluated = [row for row in results if row.get("status") == "Evaluada"]
+    all_scores = [row.get("score") for row in results if row.get("score") is not None]
+    ev_scores = [row.get("score") for row in evaluated if row.get("score") is not None]
+
+    bands = (
+        ("0", 0.0, 0.0),
+        ("0.1-39.9", 0.1, 39.9),
+        ("40-54.9", 40.0, 54.9),
+        ("55-69.9", 55.0, 69.9),
+        ("70-84.9", 70.0, 84.9),
+        ("85-100", 85.0, 100.0),
+    )
+    distribution = [
+        {"label": label, "count": sum(1 for s in all_scores if lo <= s <= hi)}
+        for label, lo, hi in bands
+    ]
+    approved = [s for s in ev_scores if s >= approval_threshold]
+    return {
+        "students": student_count,
+        "evaluations": evaluation_count,
+        "evaluated": len(evaluated),
+        "missing": len([row for row in results if row.get("status") != "Evaluada"]),
+        "averageAll": round(statistics.mean(all_scores), 2) if all_scores else None,
+        "averageEvaluated": round(statistics.mean(ev_scores), 2) if ev_scores else None,
+        "medianEvaluated": round(statistics.median(ev_scores), 2) if ev_scores else None,
+        "minEvaluated": min(ev_scores) if ev_scores else None,
+        "maxEvaluated": max(ev_scores) if ev_scores else None,
+        "approvalCount": len(approved),
+        "approvalRate": round((len(approved) / len(ev_scores)) * 100, 2) if ev_scores else 0,
+        "distribution": distribution,
+    }
+
+
+def build_legacy_aliases(canonical: dict[str, dict], generated_at: str) -> dict[str, dict]:
+    """Exact legacy-contract payloads consumed by the legacy flow.
+
+    - ``course/results.json`` keeps the ``{"items": [...]}`` wrapper and the
+      contractual result keys (``studentId`` opaque, ``evaluationId``,
+      ``form``, ``status``, ``score``, ``grade``, ``resultPath``,
+      ``finalFeedback``, ``ies``). ``resultPath`` is a safe ``null``
+      substitution: a private evidence path cannot be reproduced without
+      leaking PII, and the real consumers only rewrite it when it is a real
+      path (they read the remaining keys unchanged).
+    - ``course/students.json`` and ``course/evaluations.json`` keep their
+      ``items`` wrappers and contractual keys; ``name``/``rut`` are empty-safe
+      substitutions (PII is never reproduced).
+    """
+    section = canonical["section"]
+    subjects = canonical["subjects"]
+    assessments = canonical["assessments"]
+    results = canonical["results"]
+    policy = canonical["policy"]
+
+    course_cfg = section.get("course") or {}
+    course_name = course_cfg.get("code") or section.get("sectionId")
+    defaults = policy.get("effectiveDefaults") or {}
+    approval_threshold = float(defaults.get("approvalThreshold") or 0)
+
+    result_rows = results.get("results", [])
+    evaluation_items = [
+        {
+            "id": item["assessmentId"],
+            "title": item.get("title"),
+            "type": item.get("type"),
+            "date": item.get("date"),
+            "weight": (policy.get("evaluationWeights") or {}).get(item["assessmentId"]),
+            "forms": item.get("forms") or [],
+            "summary": {},
+            "ieSummary": [],
+            "performanceLevels": [],
+        }
+        for item in assessments.get("assessments", [])
+    ]
+    result_items = [
+        {
+            "studentId": row.get("studentId"),
+            "evaluationId": row.get("assessmentId"),
+            "form": row.get("form"),
+            "status": row.get("status"),
+            "score": row.get("score"),
+            "grade": row.get("grade"),
+            "resultPath": None,
+            "finalFeedback": row.get("feedback"),
+            "ies": list(row.get("components") or []),
+        }
+        for row in result_rows
+    ]
+    student_items = [
+        {
+            "id": item["studentId"],
+            "name": "",
+            "rut": "",
+            "forms": _legacy_forms_for(item["studentId"], result_rows),
+            "summary": {},
+        }
+        for item in subjects.get("subjects", [])
+    ]
+
+    return {
+        "course/course.json": {
+            "generatedAt": generated_at,
+            "course": {"name": course_name, "title": course_cfg.get("title")},
+            "defaults": defaults,
+        },
+        "course/students.json": {"items": student_items},
+        "course/evaluations.json": {"items": evaluation_items},
+        "course/results.json": {"items": result_items},
+        "course/course-summary.json": _legacy_course_summary(
+            result_rows,
+            len(subjects.get("subjects", [])),
+            len(evaluation_items),
+            approval_threshold,
+        ),
+    }
+
+
+def _legacy_contract_errors(staging: Path) -> list[str]:
+    """Structural check that the alias bundle preserves the exact legacy contract."""
+    problems: list[str] = []
+
+    def check(rel: str, keys, label: str) -> Optional[dict]:
+        path = staging / rel
+        if not path.is_file():
+            problems.append(f"{rel}: missing")
+            return None
+        payload = read_json(path)
+        items = payload.get("items")
+        if not isinstance(items, list):
+            problems.append(f"{rel}: must wrap {label} in an 'items' list")
+            return None
+        for index, row in enumerate(items):
+            for key in keys:
+                if key not in row:
+                    problems.append(f"{rel} items[{index}]: missing key {key!r}")
+        return payload
+
+    check("course/results.json", LEGACY_RESULT_KEYS, "results")
+    check("course/students.json", LEGACY_STUDENT_KEYS, "students")
+    check("course/evaluations.json", LEGACY_EVALUATION_KEYS, "evaluations")
+
+    course = read_json(staging / "course/course.json") if (staging / "course/course.json").is_file() else None
+    if course is None:
+        problems.append("course/course.json: missing")
+    else:
+        if not isinstance(course.get("course"), dict):
+            problems.append("course/course.json: missing 'course' object")
+        if not isinstance(course.get("defaults"), dict):
+            problems.append("course/course.json: missing 'defaults' object")
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
@@ -315,7 +481,7 @@ def _generate_locked(
         written.extend(
             _commit_legacy_aliases_locked(
                 ctx,
-                content,
+                canonical,
                 manifest,
                 replace_existing=replace_legacy_aliases,
             )
@@ -340,12 +506,12 @@ def _hash_gate(staging: Path, envelopes: dict[str, dict], manifest: dict) -> Non
 
 def _commit_legacy_aliases_locked(
     ctx,
-    content: dict[str, dict],
+    canonical: dict[str, dict],
     manifest: dict,
     *,
     replace_existing: bool,
 ) -> list[str]:
-    """Atomically promote the legacy alias bundle.
+    """Atomically promote an exact legacy-contract alias bundle.
 
     The complete bundle is built and validated in a unique staging directory
     and promoted with a single atomic directory rename. By default an existing
@@ -360,8 +526,9 @@ def _commit_legacy_aliases_locked(
     )
     staging.mkdir(parents=True)
     try:
-        for rel, view_content in content.items():
-            write_json(staging / rel, view_content)
+        content = build_legacy_aliases(canonical, ctx.clock.iso())
+        for rel, payload in content.items():
+            write_json(staging / rel, payload)
         write_json(
             staging / "PROVENANCE.json",
             {
@@ -372,6 +539,13 @@ def _commit_legacy_aliases_locked(
                 "generatedAt": ctx.clock.iso(),
             },
         )
+
+        contract_errors = _legacy_contract_errors(staging)
+        if contract_errors:
+            raise PublicationError(
+                "Legacy aliases violate the exact legacy contract: "
+                + "; ".join(contract_errors)
+            )
 
         report = VerifyReport(root=staging)
         files = {
