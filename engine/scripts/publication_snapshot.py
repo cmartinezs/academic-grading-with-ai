@@ -308,7 +308,11 @@ COMMANDS = {
 
 
 def _redact(text: str) -> str:
-    """Mask RUT/email patterns so they never reach stderr (P0 privacy, item 29)."""
+    """Mask RUT/email/absolute-path patterns so they never reach stderr.
+
+    Source-level sanitization already strips PII and paths from exception
+    messages; this is a last line of defense (P0 privacy, item 29).
+    """
     import re
 
     text = re.sub(
@@ -319,6 +323,21 @@ def _redact(text: str) -> str:
     text = re.sub(
         r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
         "[EMAIL]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)file://[^\s\]]+",
+        "[PATH]",
+        text,
+    )
+    text = re.sub(
+        r"\b[A-Za-z]:[\\/][^\s\]]+",
+        "[PATH]",
+        text,
+    )
+    text = re.sub(
+        r"(?<![A-Za-z0-9_./-])/(?:[A-Za-z0-9_.~-]+/){2,}[A-Za-z0-9_.~-]*",
+        "[PATH]",
         text,
     )
     return text

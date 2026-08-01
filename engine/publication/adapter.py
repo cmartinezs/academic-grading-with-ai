@@ -35,6 +35,11 @@ def _subject_key() -> str:
     return "studentId"
 
 
+def _fingerprint(value) -> str:
+    """Short opaque fingerprint for a sensitive id; never reproduces the value."""
+    return sha256_bytes(encode(str(value)))[:12]
+
+
 class LegacyAdapter:
     """Deterministic adapter: legacy export + opaque identity mapping -> canonical payloads."""
 
@@ -64,7 +69,7 @@ class LegacyAdapter:
             student_id = self.resolve(rut)
             if student_id is None:
                 raise UnmappedStudentError(
-                    f"No opaque identity assigned for legacy student {rut}; "
+                    f"No opaque identity assigned for legacy student {_fingerprint(rut)}; "
                     "run c0-identity/c0-migrate before building."
                 )
             mapping[rut] = student_id
@@ -75,7 +80,7 @@ class LegacyAdapter:
                 continue
             if rut not in mapping:
                 raise UnmappedStudentError(
-                    f"Result references a student without opaque identity: {rut}."
+                    f"Result references a student without opaque identity: {_fingerprint(rut)}."
                 )
         return mapping
 

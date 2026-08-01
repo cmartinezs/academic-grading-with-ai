@@ -164,12 +164,15 @@ def check_same_filesystem(left: Path, right: Path) -> None:
         left_dev = os.stat(_nearest_existing(left)).st_dev
         right_dev = os.stat(_nearest_existing(right)).st_dev
     except OSError as exc:
-        raise SameFilesystemError(f"Cannot stat roots for atomic rename: {exc}") from exc
+        raise SameFilesystemError(
+            "Cannot stat the configured roots for atomic rename; configure "
+            "ACADGRAD_TEMP_ROOT and ACADGRAD_PUBLICATIONS_ROOT on the same filesystem."
+        ) from exc
     if left_dev != right_dev:
         raise SameFilesystemError(
-            f"Staging root ({left}) and publications root ({right}) are on different "
-            "filesystems; atomic rename is not possible. Configure ACADGRAD_TEMP_ROOT on "
-            "the same filesystem as ACADGRAD_PUBLICATIONS_ROOT."
+            "The staging root and the publications root are on different filesystems; "
+            "atomic rename is not possible. Configure ACADGRAD_TEMP_ROOT on the same "
+            "filesystem as ACADGRAD_PUBLICATIONS_ROOT."
         )
 
 
@@ -204,9 +207,9 @@ def promote(ctx: BuildContext) -> Path:
     staging = ctx.staging_dir()
     dest = ctx.destination_dir()
     if not staging.is_dir():
-        raise PublicationError(f"Staging does not exist: {staging}")
+        raise PublicationError(f"Staging does not exist for publication {ctx.publication_id}.")
     if dest.exists():
-        raise DestinationExistsError(f"Destination already exists: {dest}")
+        raise DestinationExistsError(f"Destination already exists for publication {ctx.publication_id}.")
     check_same_filesystem(staging.parent, dest.parent)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -417,7 +420,8 @@ def _build_draft_locked(
     staging = ctx.staging_dir()
     if not dry_run and staging.exists():
         raise StagingExistsError(
-            f"Staging already exists: {staging}. Use 'discard' to remove it or a new publicationId."
+            f"Staging already exists for publication {ctx.publication_id}. "
+            "Use 'discard' to remove it or a new publicationId."
         )
 
     def payload_hash(payload) -> str:
@@ -506,7 +510,9 @@ def verify(ctx: BuildContext, target: str = "staging") -> VerifyReport:
     else:
         raise PublicationError(f"Unknown verify target: {target!r}")
     if not root.is_dir():
-        raise PublicationError(f"Snapshot does not exist for verification: {root}")
+        raise PublicationError(
+            f"Snapshot does not exist for verification: publication {ctx.publication_id}."
+        )
     return verify_snapshot(root, ctx.section_id, ctx.publication_id, immutable=(target == "approved"))
 
 
@@ -538,7 +544,7 @@ def _review_draft_locked(
         raise PublicationError("reviewer must be a non-email audit id.")
     staging = ctx.staging_dir()
     if not staging.is_dir():
-        raise PublicationError(f"Staging does not exist: {staging}")
+        raise PublicationError(f"Staging does not exist for publication {ctx.publication_id}.")
     current_content, current_review = _current_hashes(staging, ctx)
     if content_hash is not None and current_content != content_hash:
         raise ContentHashMismatchError(
@@ -622,7 +628,7 @@ def _approve_draft_locked(
 
     staging = ctx.staging_dir()
     if not staging.is_dir():
-        raise PublicationError(f"Staging does not exist: {staging}")
+        raise PublicationError(f"Staging does not exist for publication {ctx.publication_id}.")
 
     current_content, current_review = _current_hashes(staging, ctx)
     if content_hash is not None and current_content != content_hash:

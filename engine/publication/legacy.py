@@ -96,11 +96,15 @@ def _load_json(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise MissingLegacyExportError(f"Missing legacy export file: {path}") from exc
+        raise MissingLegacyExportError(f"Missing legacy export file: {path.name}") from exc
     except json.JSONDecodeError as exc:
-        raise MissingLegacyExportError(f"Invalid legacy export file {path}: {exc}") from exc
+        raise MissingLegacyExportError(
+            f"Invalid legacy export file {path.name}: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
-        raise MissingLegacyExportError(f"Legacy export file must be a JSON object: {path}")
+        raise MissingLegacyExportError(
+            f"Legacy export file must be a JSON object: {path.name}"
+        )
     return payload
 
 
@@ -126,7 +130,8 @@ def load_legacy_export(
     course_dir = Path(resolved) / "course"
     if not course_dir.is_dir():
         raise MissingLegacyExportError(
-            f"Legacy export missing course/ directory: {resolved} (run ./scripts/export-results.sh)"
+            "Legacy export missing course/ directory in the configured legacy "
+            "export (run ./scripts/export-results.sh)"
         )
 
     source_hashes: list[dict] = []

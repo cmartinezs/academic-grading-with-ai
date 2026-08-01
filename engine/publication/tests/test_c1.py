@@ -1482,5 +1482,99 @@ class RecoveryP0Test(C1TestCase):
         self.assertTrue(dest.exists(), "integrity failure must not delete the snapshot")
 
 
+# ---------------------------------------------------------------------------
+# Final: exceptions never leak RUT/email/absolute paths (source-level)
+# ---------------------------------------------------------------------------
+
+
+class ExceptionPrivacyTest(C1TestCase):
+    EMAIL = "estudiante@ejemplo.cl"
+
+    def _leak_strings(self):
+        return [
+            self.env["ACADGRAD_PRIVATE_ROOT"],
+            self.env["ACADGRAD_STATE_ROOT"],
+            self.env["ACADGRAD_PUBLICATIONS_ROOT"],
+            self.env["ACADGRAD_TEMP_ROOT"],
+            str(self.base),
+            str(self.legacy),
+            RUT_A,
+            self.EMAIL,
+            os.path.expanduser("~"),
+        ]
+
+    def _assert_clean(self, exc) -> None:
+        text = str(exc)
+        for leak in self._leak_strings():
+            self.assertNotIn(leak, text, f"exception leaks {leak!r}")
+
+    def test_unmapped_student_exception_clean(self):
+        self.ensure_identity([RUT_A])
+        ctx = self.ctx()
+        with self.assertRaises(UnmappedStudentError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+        self.assertNotIn(RUT_B, str(cm.exception), "unmapped id must not be reproduced")
+
+    def test_missing_legacy_export_exception_clean(self):
+        ctx = self.ctx(legacy_source=str(self.base / "empty"))
+        with self.assertRaises(MissingLegacyExportError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_course_mismatch_exception_clean(self):
+        ctx = self.ctx(section="OTRA-SECCION")
+        with self.assertRaises(LegacyCourseMismatchError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_staging_exists_exception_clean(self):
+        ctx = self.prep()
+        builder.build_draft(ctx)
+        with self.assertRaises(StagingExistsError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_immutable_snapshot_exception_clean(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        with self.assertRaises(ImmutableSnapshotError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_destination_exists_exception_clean(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx)
+        with self.assertRaises(DestinationExistsError) as cm:
+            compat.generate(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_missing_snapshot_exception_clean(self):
+        ctx = self.prep("pub_a")
+        with self.assertRaises(PublicationError) as cm:
+            compat.generate(ctx)
+        self._assert_clean(cm.exception)
+
+    def test_cli_stderr_is_clean(self):
+        import subprocess
+        import sys
+
+        script = Path(__file__).resolve().parents[3] / "engine" / "scripts" / "publication_snapshot.py"
+        env = dict(os.environ)
+        env.update(self.env)
+        proc = subprocess.run(
+            [
+                sys.executable, str(script),
+                "--workspace", str(self.base), "--section", SECTION,
+                "build", "--legacy-source", str(self.legacy),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        for leak in self._leak_strings():
+            self.assertNotIn(leak, proc.stderr, f"stderr leaks {leak!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
