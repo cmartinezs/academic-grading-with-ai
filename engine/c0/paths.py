@@ -117,13 +117,42 @@ def git_worktree_present(path: Path) -> bool:
     return False
 
 
+def _nearest_existing(path: Path) -> Path:
+    current = Path(path).resolve()
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def owning_repo(path: Path) -> Optional[Path]:
+    """Return the git worktree root containing ``path`` (any repository), if any.
+
+    Walks up from ``path`` to the nearest existing ancestor so that a not-yet-created
+    data root is still checked against the repository that will contain it.
+    """
+    result = run_git_result(_nearest_existing(path), "rev-parse", "--show-toplevel")
+    if result is None or result.returncode != 0:
+        return None
+    root = result.stdout.strip()
+    return Path(root).resolve() if root else None
+
+
 def classify_zone(path: Path, workspace_root: Path) -> ZoneClassification:
-    """Classify whether ``path`` is a safe location for private data."""
+    """Classify whether ``path`` is a safe location for private data.
+
+    Checks the path against *any* Git worktree that contains it (not only the current
+    workspace), so a root placed inside a second repository is rejected too. If Git is
+    unavailable the classification fails closed.
+    """
     path = Path(path).expanduser().resolve()
-    repo = git_repo_root(workspace_root)
+    probe = run_git_result(Path.cwd(), "--version")
+    if probe is None:
+        return ZoneClassification.UNSAFE_UNKNOWN
+    repo = owning_repo(path)
     if repo is None:
-        if git_worktree_present(workspace_root):
-            return ZoneClassification.UNSAFE_UNKNOWN
         return ZoneClassification.SAFE_OUTSIDE_REPO
     try:
         path.relative_to(repo)
@@ -136,10 +165,14 @@ def classify_zone(path: Path, workspace_root: Path) -> ZoneClassification:
             return ZoneClassification.UNSAFE_TRACKED
 
     check = run_git_result(repo, "check-ignore", "-q", "--", str(path))
+    if check is not None and check.returncode == 0:
+        return ZoneClassification.SAFE_IGNORED
+    if not path.exists():
+        check_dir = run_git_result(repo, "check-ignore", "-q", "--", str(path) + "/")
+        if check_dir is not None and check_dir.returncode == 0:
+            return ZoneClassification.SAFE_IGNORED
     if check is None:
         return ZoneClassification.UNSAFE_UNKNOWN
-    if check.returncode == 0:
-        return ZoneClassification.SAFE_IGNORED
     return ZoneClassification.UNSAFE_NOT_IGNORED
 
 
@@ -217,6 +250,8 @@ def resolve_runtime_roots(
         ):
             raise UnsafeDataRootError(_unsafe_message(name, path, classification))
 
+    _validate_no_overlap(resolved)
+
     source = "config-file" if "config-file" in sources else ("env" if "env" in sources else "default")
     return RuntimeConfig(
         private_root=resolved["private"],
@@ -225,6 +260,20 @@ def resolve_runtime_roots(
         temp_root=resolved["temp"],
         source=source,
     )
+
+
+def _validate_no_overlap(resolved: dict[str, Path]) -> None:
+    """Reject equal or nested data roots: they must be distinct, non-overlapping zones."""
+    names = list(resolved)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            left_name, right_name = names[i], names[j]
+            left, right = resolved[left_name], resolved[right_name]
+            if left == right or left in right.parents or right in left.parents:
+                raise InvalidRuntimeConfigError(
+                    f"Overlapping data roots: '{left_name}' ({left}) and "
+                    f"'{right_name}' ({right}) must be distinct and not nested."
+                )
 
 
 def _unsafe_message(name: str, path: Path, classification: ZoneClassification) -> str:

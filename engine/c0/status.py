@@ -106,10 +106,16 @@ def run_security_checks(workspace_root: Path, env: Optional[Mapping[str, str]] =
 
     perms = _check_permissions(runtime.private_root)
     if perms:
-        report.findings.append(StatusFinding(WARN, "permissions", perms))
+        report.findings.append(StatusFinding(FAIL, "permissions", perms))
     perms = _check_permissions(runtime.state_root)
     if perms:
-        report.findings.append(StatusFinding(WARN, "permissions", perms))
+        report.findings.append(StatusFinding(FAIL, "permissions", perms))
+    perms = _check_permissions(runtime.publications_root)
+    if perms:
+        report.findings.append(StatusFinding(FAIL, "permissions", perms))
+    perms = _check_permissions(runtime.temp_root)
+    if perms:
+        report.findings.append(StatusFinding(FAIL, "permissions", perms))
 
     scanner = Scanner()
     findings = scanner.scan_files([(_rel(path, root), path) for path in git.tracked_files(root) if path.is_file()])

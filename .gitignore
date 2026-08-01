@@ -32,6 +32,10 @@ evaluations/*/*/form-*/results/
 # Target architecture runtime roots (all zones; in-repo fallback)
 runtime/
 
+# Local runtime configuration (contains private root paths)
+runtime.json
+!runtime.example.json
+
 # Generated/private outputs
 exports/publication-input/
 exports/relational-3fn/

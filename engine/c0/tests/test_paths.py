@@ -8,6 +8,8 @@ from pathlib import Path
 
 from c0.paths import (
     ENV_PRIVATE_ROOT,
+    ENV_STATE_ROOT,
+    InvalidRuntimeConfigError,
     UnsafeDataRootError,
     ZoneClassification,
     classify_zone,
@@ -158,6 +160,51 @@ class PathResolutionTest(unittest.TestCase):
             classify_zone(workspace / "nope" / "private", workspace),
             ZoneClassification.UNSAFE_TRACKED,
         )
+
+    def test_root_inside_second_git_repo_is_unsafe(self) -> None:
+        workspace = make_git_repo(self.tmp / "workspace")
+        other = make_git_repo(self.tmp / "other-repo")
+        write(other / "README.md", "# other\n")
+        git(["add", "-A"], other)
+        env = {ENV_PRIVATE_ROOT: str(other / "private-data")}
+        with self.assertRaises(UnsafeDataRootError):
+            resolve_runtime_roots(workspace, env=env)
+
+    def test_second_repo_ignored_root_is_safe(self) -> None:
+        workspace = make_git_repo(self.tmp / "workspace")
+        other = make_git_repo(self.tmp / "other-repo")
+        write(other / ".gitignore", "private-data/\n")
+        env = {ENV_PRIVATE_ROOT: str(other / "private-data")}
+        cfg = resolve_runtime_roots(workspace, env=env)
+        self.assertEqual(cfg.private_root, (other / "private-data").resolve())
+
+    def test_second_repo_tracked_root_is_unsafe(self) -> None:
+        workspace = make_git_repo(self.tmp / "workspace")
+        other = make_git_repo(self.tmp / "other-repo")
+        write(other / ".gitignore", "private-data/\n")
+        tracked = write(other / "private-data" / "x.txt", "x")
+        git(["add", "-f", str(tracked)], other)
+        env = {ENV_PRIVATE_ROOT: str(other / "private-data")}
+        with self.assertRaises(UnsafeDataRootError):
+            resolve_runtime_roots(workspace, env=env)
+
+    def test_equal_roots_rejected(self) -> None:
+        workspace = make_git_repo(self.tmp / "workspace")
+        env = {
+            ENV_PRIVATE_ROOT: str(self.tmp / "data"),
+            ENV_STATE_ROOT: str(self.tmp / "data"),
+        }
+        with self.assertRaises(InvalidRuntimeConfigError):
+            resolve_runtime_roots(workspace, env=env)
+
+    def test_nested_roots_rejected(self) -> None:
+        workspace = make_git_repo(self.tmp / "workspace")
+        env = {
+            ENV_PRIVATE_ROOT: str(self.tmp / "data"),
+            ENV_STATE_ROOT: str(self.tmp / "data" / "state"),
+        }
+        with self.assertRaises(InvalidRuntimeConfigError):
+            resolve_runtime_roots(workspace, env=env)
 
 
 if __name__ == "__main__":

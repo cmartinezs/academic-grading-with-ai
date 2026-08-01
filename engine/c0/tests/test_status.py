@@ -82,11 +82,12 @@ class StatusTest(unittest.TestCase):
         report = self.report()
         self.assertTrue(any(f.check == "pending-migration" and f.state == WARN for f in report.findings))
 
-    def test_warn_on_permissions(self) -> None:
+    def test_fail_on_permissions(self) -> None:
         self.private.mkdir(parents=True, exist_ok=True)
         self.private.chmod(0o755)
         report = self.report()
-        self.assertTrue(any(f.check == "permissions" and f.state == WARN for f in report.findings))
+        self.assertEqual(report.worst_state(), FAIL)
+        self.assertTrue(any(f.check == "permissions" and f.state == FAIL for f in report.findings))
 
     def test_status_is_read_only(self) -> None:
         before = {path for path in self.workspace.rglob("*") if path.is_file()}
