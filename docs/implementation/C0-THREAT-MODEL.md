@@ -42,8 +42,9 @@ credentials rotation, or other sections (C1–C7).
 
 ## 5. Residual risks
 
-- Synthetic fixtures are allow-listed wholesale under `engine/c0/fixtures/synthetic/**`;
-  real data placed there would escape detection.
+- Synthetic fixtures are allow-listed per rule under `engine/c0/fixtures/synthetic/**`
+  (only RUT/email/path-rule exceptions; wildcard and high-confidence rules are
+  rejected); real data placed there would still be caught by secret/`.env` detection.
 - Pre-commit hook is optional; a non-installed environment relies on CI/`c0-status`.
 - Identity ledger is protected by filesystem permissions, not encryption-at-rest.
 

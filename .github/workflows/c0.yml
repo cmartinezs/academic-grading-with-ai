@@ -1,0 +1,29 @@
+name: C0 security gates
+
+on:
+  push:
+    branches: [master, feat/c0-security-data-boundaries]
+  pull_request:
+
+jobs:
+  c0:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run C0 unit test suite
+        run: ./scripts/c0-test.sh
+
+      - name: Tracked scan (strict)
+        run: ./scripts/c0-scan.sh --tracked --strict
+
+      - name: Security status gate
+        run: |
+          runtime=$(mktemp -d)
+          mkdir -p "$runtime/private" "$runtime/state" "$runtime/publications" "$runtime/tmp"
+          chmod 700 "$runtime/private" "$runtime/state" "$runtime/publications" "$runtime/tmp"
+          export ACADGRAD_PRIVATE_ROOT="$runtime/private"
+          export ACADGRAD_STATE_ROOT="$runtime/state"
+          export ACADGRAD_PUBLICATIONS_ROOT="$runtime/publications"
+          export ACADGRAD_TEMP_ROOT="$runtime/tmp"
+          ./scripts/c0-status.sh

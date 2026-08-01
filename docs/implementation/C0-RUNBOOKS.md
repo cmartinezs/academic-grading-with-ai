@@ -8,7 +8,7 @@ Operational procedures for the C0 data boundaries. Read the threat model in
 - Scanner: `./scripts/c0-scan.sh [--tracked|--staged|--path <dir>] [--strict]`
 - Status: `./scripts/c0-status.sh [--json] [--strict]`
 - Identity: `./scripts/c0-identity.sh [--section <CODE>] [--apply]`
-- Migration: `./scripts/c0-migrate.sh [--apply|--rollback <id>] [--section <CODE>]`
+- Migration: `./scripts/c0-migrate.sh [--apply|--rollback <SECTION>] [--section <CODE>]`
 - Tests: `./scripts/c0-test.sh`
 - Pre-commit hook: `./scripts/install-pre-commit-hook.sh --install|--uninstall`
 
@@ -58,16 +58,22 @@ Prerequisite: section `config.json` present (e.g. `evaluations/CUR0001-001/confi
 ```
 
 Effects: `studentId` identities created in the state root; raw submissions and graded
-evidence moved to the private root; manifests written in the state root; **the origin
-is never deleted**.
+evidence **copied** to the private root; a manifest written in the private root; a
+ledger written in the state root. **The origin is never deleted and never moved.**
 
-Rollback after migration:
+Where things live after a migration of section `CUR0001-001`:
+
+- Copied data: `<ACADGRAD_PRIVATE_ROOT>/sections/CUR0001-001/...`
+- Manifest: `<ACADGRAD_PRIVATE_ROOT>/sections/CUR0001-001/migration-manifest.json`
+- Ledger: `<ACADGRAD_STATE_ROOT>/migrations/CUR0001-001-migration.json`
+- Locks: `<ACADGRAD_STATE_ROOT>/locks/migrate-CUR0001-001.lock`
+
+Rollback removes only the verified copies recorded in the manifest (hash-checked),
+then deletes the manifest:
 
 ```sh
-./scripts/c0-migrate.sh --rollback <migration-id>   # restore from manifest, hashes verified
+./scripts/c0-migrate.sh --rollback CUR0001-001   # removes verified copies
 ```
-
-Migration IDs are listed in the state root manifest dir.
 
 ## 4. Safe deletion of legacy data
 
