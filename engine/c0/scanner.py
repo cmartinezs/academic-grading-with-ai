@@ -166,9 +166,21 @@ class Scanner:
 
     def _content_findings(self, rel_path: str, content: bytes) -> list[ScanFinding]:
         if len(content) > MAX_CONTENT_SCAN_BYTES:
-            return []
+            finding = self._finding(
+                SEVERITY_REVIEW,
+                rel_path,
+                "uninspected-large",
+                f"File not inspected: {len(content)} bytes exceeds the {MAX_CONTENT_SCAN_BYTES} byte scan limit.",
+            )
+            return [finding] if finding else []
         if b"\x00" in content[:BINARY_SNIFF_BYTES]:
-            return []
+            finding = self._finding(
+                SEVERITY_REVIEW,
+                rel_path,
+                "uninspected-binary",
+                "File not inspected: binary content detected.",
+            )
+            return [finding] if finding else []
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
