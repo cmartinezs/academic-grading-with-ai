@@ -164,14 +164,14 @@ y el predicado `is_versionable(cls)`. Mapeo mínimo según ADR-0007 y
 
 ## 7. Tareas incrementales
 
-1. Paquete `engine/c0` + `paths.py` + `classification.py`.
-2. `identity.py` + CLI `c0_identity.py`.
-3. `migration.py` + CLI `c0_migrate.py`.
-4. `scanner.py` + allow-list + CLI `c0_scan.py` + hook pre-commit opcional.
-5. `status.py` + CLI `c0_status.py` + integración en `workspace_status.py`.
-6. Fixtures sintéticos completos.
-7. Threat models y runbooks (`docs/implementation/`).
-8. Verificación final y reporte.
+1. Paquete `engine/c0` + `paths.py` + `classification.py`. — hecho
+2. `identity.py` + CLI `c0_identity.py`. — hecho
+3. `migration.py` + CLI `c0_migrate.py`. — hecho
+4. `scanner.py` + allow-list + CLI `c0_scan.py` + hook pre-commit opcional. — hecho
+5. `status.py` + CLI `c0_status.py` + integración en `workspace_status.py`. — hecho
+6. Fixtures sintéticos completos. — hecho
+7. Threat models y runbooks (`docs/implementation/`). — hecho
+8. Verificación final y reporte. — pendiente
 
 ## 8. Tests por tarea
 

@@ -1,0 +1,4 @@
+{
+  "invalid": true,
+  "reason": "This section intentionally lacks the course.name field to exercise error paths in the section index and C0 checks."
+}

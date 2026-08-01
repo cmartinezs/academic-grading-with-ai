@@ -11,47 +11,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "engine"))
 
+from c0 import git  # noqa: E402
 from c0.scanner import Scanner, SEVERITY_BLOCK, SEVERITY_REVIEW  # noqa: E402
 
 
-def git_output(repo: Path, *args: str) -> list[str]:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if result.returncode != 0:
-        return []
-    return [line for line in result.stdout.splitlines() if line.strip()]
-
-
 def tracked_files(repo: Path) -> list[tuple[str, Path]]:
-    files: list[tuple[str, Path]] = []
-    for line in git_output(repo, "ls-files"):
-        path = repo / line
-        if path.is_file():
-            files.append((line, path))
-    return files
+    return [(path.relative_to(repo).as_posix(), path) for path in git.tracked_files(repo) if path.is_file()]
 
 
 def staged_files(repo: Path) -> list[tuple[str, Path]]:
-    files: list[tuple[str, Path]] = []
-    for line in git_output(repo, "diff", "--cached", "--name-only", "--diff-filter=ACMR"):
-        path = repo / line
-        if path.is_file():
-            files.append((line, path))
-    return files
+    return [(path.relative_to(repo).as_posix(), path) for path in git.staged_files(repo) if path.is_file()]
 
 
 def path_files(repo: Path, directory: Path) -> list[tuple[str, Path]]:

@@ -1,0 +1,20 @@
+{
+  "description": "Synthetic case: two roster rows resolve to the same RUT, which must fail identity assignment to prevent ambiguous opaque identifiers.",
+  "students": [
+    {
+      "order": 1,
+      "rut": "11.111.111-1",
+      "lastName": "González",
+      "fullName": "María González",
+      "repoUrl": "git@example.test:mgonzalez/repo.git"
+    },
+    {
+      "order": 2,
+      "rut": "11.111.111-1",
+      "lastName": "González",
+      "fullName": "María González",
+      "repoUrl": "git@example.test:magonzalez/repo.git"
+    }
+  ],
+  "expected": "identity assignment should fail with a duplicate-RUT error"
+}

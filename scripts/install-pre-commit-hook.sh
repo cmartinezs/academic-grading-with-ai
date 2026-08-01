@@ -44,10 +44,9 @@ ROOT="$(git rev-parse --show-toplevel)"
 if python3 "${ROOT}/engine/scripts/c0_scan.py" --staged --workspace "${ROOT}"; then
     exit 0
 fi
-status=$?
 echo "Commit blocked: C0 PII/secret scanner found issues in staged files." >&2
 echo "Fix the findings or explicitly allow them in engine/c0/allowlist.json." >&2
-exit "${status}"
+exit 1
 EOF
 
 chmod +x "${HOOK}"

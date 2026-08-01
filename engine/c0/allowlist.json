@@ -26,6 +26,16 @@
       "path": "engine/c0/tests/**",
       "rules": ["chilean-rut", "email"],
       "reason": "Synthetic tests use fictional RUT/email-shaped identifiers; secret detection stays active."
+    },
+    {
+      "path": "engine/c0/tests/test_scanner.py",
+      "rules": ["*"],
+      "reason": "Unit test must embed synthetic secret-shaped values to exercise the detection rules; fictional placeholders only."
+    },
+    {
+      "path": "engine/c0/tests/test_status.py",
+      "rules": ["*"],
+      "reason": "Unit test embeds a fictional secret-shaped literal to exercise the versionable-private-data FAIL gate."
     }
   ]
 }
