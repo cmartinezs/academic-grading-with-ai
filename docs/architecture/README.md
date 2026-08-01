@@ -19,6 +19,8 @@ seguras o generales antes de iniciar la implementación.
 | [05-security-and-data-boundaries.md](05-security-and-data-boundaries.md) | Nuevo; obligatorio antes de implementar |
 | [06-supported-profile-and-extension-points.md](06-supported-profile-and-extension-points.md) | Nuevo; delimita generalidad V1 |
 | [07-grade-policy-contract.md](07-grade-policy-contract.md) | Nuevo; contrato tipado de reglas |
+| [08-migration-strategy.md](08-migration-strategy.md) | Nuevo; evolución compatible desde el workspace actual |
+| [09-verification-strategy.md](09-verification-strategy.md) | Nuevo; estrategia de pruebas y gates |
 | [ADRs](ADRs/) | ADR-0001 a ADR-0011 revisados/propuestos |
 
 ## Línea base validada
@@ -63,7 +65,7 @@ pero no es suficiente por sí solo para reproducir una publicación.
   ejecutores con efectos, auditables e idempotentes.
 - El portal estático no confía en ocultamiento visual ni en códigos cortos: usa hosting
   autenticado o contenido cifrado con capacidad de alta entropía.
-- `grade-rules.json` usa operadores cerrados y tipados; no contiene expresiones libres.
+- `grade-policy.json` usa operadores cerrados y tipados; no contiene expresiones libres.
 - Discovery puede proponer instancias de configuración, nunca redefinir schemas o el
   metamodelo del core.
 
@@ -71,6 +73,9 @@ pero no es suficiente por sí solo para reproducir una publicación.
 
 1. Leer [01-target-architecture.md](01-target-architecture.md).
 2. Revisar [05-security-and-data-boundaries.md](05-security-and-data-boundaries.md).
-3. Revisar [07-grade-policy-contract.md](07-grade-policy-contract.md).
-4. Aprobar ADR-0001 a ADR-0011.
-5. Ejecutar el roadmap C0–C7 de [04-roadmap.md](04-roadmap.md).
+3. Revisar [06-supported-profile-and-extension-points.md](06-supported-profile-and-extension-points.md).
+4. Revisar [07-grade-policy-contract.md](07-grade-policy-contract.md).
+5. Revisar [08-migration-strategy.md](08-migration-strategy.md) y
+   [09-verification-strategy.md](09-verification-strategy.md).
+6. Aprobar ADR-0001 a ADR-0011.
+7. Ejecutar el roadmap C0–C7 de [04-roadmap.md](04-roadmap.md).
