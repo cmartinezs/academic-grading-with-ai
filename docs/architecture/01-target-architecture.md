@@ -1,178 +1,318 @@
 # 01 — Arquitectura objetivo
 
-Fase: diseño. No se implementa código en esta fase.
+Estado: diseño revisado. No autoriza implementación hasta aprobar los ADRs y completar C0.
 
-## Resolución previa (A–J)
+## 1. Objetivo
 
-### A. Fuente canónica de resultados
+Construir un workspace académico que transforme resultados revisados en una publicación
+versionada, auditable y segura, y que luego genere proyecciones específicas para:
 
-Doble capa:
+- estudiantes;
+- docentes;
+- directiva/BI;
+- automatizaciones operacionales como email.
 
-- `evaluations/<SECTION>/<EV>/form-x/results/*.md` → **evidencia humana** (revisada).
-- `exports/publication-input/course/results.json` → **fuente canónica máquina**; única
-  entrada permitida para todo artefacto derivado.
+La arquitectura debe reutilizar lo aprendido en `FPY1101-010V` sin copiar sus decisiones
+accidentales ni convertir reglas institucionales particulares en comportamiento del core.
 
-Ningún publisher re-parsea `.md`; eso solo lo hace `export-publication-data.py`. Se
-elimina la duplicación de parsing que existe en el ref (donde el export 3FN vuelve a
-parsear `.md`).
+## 2. Unidad arquitectónica central: Publication Snapshot
 
-### B. Modelo canónico de publicación
-
-Tres contratos versionados:
-
-1. `evaluations/<SECTION>/config.json` — enriquecido: course, access, evaluations con
-   forms/pesos/fechas/tipos + referencia a reglas.
-2. `exports/publication-input/course/results.json` — resultados parseados con IEs.
-3. `evaluations/<SECTION>/grades.json` — nota consolidada por estudiante/EV (vista estable).
-
-`evaluations.json` es un índice derivado, no una fuente.
-
-### C. Artefactos derivados
-
-`grades.json`, `evaluations.json`, `exports/relational-3fn/`, `exports/student-results-web/`,
-`exports/email/`. Todos regenerables y deterministas a partir de la fuente canónica.
-
-### D. Límites core / automation / adapters / publishers
+El artefacto central es un **Publication Snapshot** inmutable. Representa exactamente
+qué información académica fue aprobada para una sección en una publicación concreta.
 
 ```text
-┌──────────────────────────────────────────────────────────────────┐
-│ discovery/        (NO determinista, opcional)                     │
-│  scaffolding LLM → config candidata (grade-rules, forms, schemas) │
-│  salida SIEMPRE aprobada por humano → se vuelve config determinista│
-└──────────────────────────────┬───────────────────────────────────┘
+private working sources
+├── section-config.json
+├── roster privado
+├── resultados revisados
+├── grade-policy.json
+└── evidencia/provenance
+          │
+          ▼
+validate → normalize → calculate → assemble → approve
+          │
+          ▼
+Publication Snapshot <sectionId, publicationId>
+├── manifest.json
+├── canonical/results.json
+├── canonical/evaluations.json
+├── canonical/policy.json
+├── canonical/subjects.json
+├── provenance/source-hashes.json
+└── approval.json
+          │
+          ├──▶ student projection
+          ├──▶ teacher-audit projection
+          ├──▶ BI aggregate projection
+          └──▶ email preparation
+```
+
+`results.json` es el contrato canónico de resultados dentro del snapshot. No es la única
+fuente necesaria para reproducir una publicación.
+
+## 3. Identidad del snapshot
+
+Cada snapshot declara como mínimo:
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "sectionId": "sec_01J...",
+  "publicationId": "pub_01J...",
+  "supersedesPublicationId": null,
+  "status": "approved",
+  "engineVersion": "...",
+  "policyVersion": "...",
+  "sourceHashes": {},
+  "createdAt": "...",
+  "approvedAt": "...",
+  "approvedBy": "..."
+}
+```
+
+`publicationId` es el eje común para portal, email, BI, auditoría, correcciones y
+revocaciones.
+
+## 4. Capas y responsabilidades
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ discovery/ — opcional y no determinista                            │
+│ Propone instancias de config/reglas compatibles con schemas        │
+│ existentes. Nunca crea schemas ni código del core.                 │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ aprobación humana
+┌──────────────────────────────▼─────────────────────────────────────┐
+│ private workspace data                                             │
+│ roster, submissions, resultados revisados, config, policy          │
+│ Fuera de Git; acceso local controlado.                              │
+└──────────────────────────────┬─────────────────────────────────────┘
                                │
-┌──────────────────────────────▼───────────────────────────────────┐
-│ core/  (determinista, Python, sin estado)                        │
-│  adapters   → extract-submissions, import-students, AVA import   │
-│  parsing    → export-publication-data.py → results.json          │
-│  engine     → aplica grade-rules.json (declarativo, por sección) │
-│  schemas    → engine/schemas/*.schema.json (versionados)         │
-│  validators → gates en cada corte de pipeline                    │
-└──────┬──────────────────────────┬───────────────────────────────┘
-       │                          │
-┌──────▼──────────────┐   ┌───────▼──────────────────────────────┐
-│ publishers Python   │   │ publishers Node (OPCIONAL, aislados) │
-│ sync-section-       │   │ build-student-results-web.mjs        │
-│ indexes (grades/    │   │ automation/email/* (nodemailer)      │
-│ evaluations)        │   │ runtime check → skip con error claro │
-│ export-relational   │   └──────────────────────────────────────┘
-│ 3fn + validador     │
-└─────────────────────┘
+┌──────────────────────────────▼─────────────────────────────────────┐
+│ core/ — Python, determinista, sin efectos externos                 │
+│ adapters     normalizan entradas institucionales                    │
+│ parsers      convierten evidencia revisada a contratos tipados      │
+│ policy       calcula notas con operadores registrados               │
+│ snapshot     ensambla bundles inmutables                            │
+│ validators   schemas + invariantes semánticos                       │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ snapshot aprobado
+          ┌────────────────────┼──────────────────────┐
+          ▼                    ▼                      ▼
+┌──────────────────┐  ┌──────────────────┐  ┌───────────────────────┐
+│ pure projections │  │ effectful portal │  │ effectful email       │
+│ teacher / BI     │  │ publish/revoke   │  │ prepare/execute       │
+│ deterministic    │  │ encrypted/auth   │  │ ledger/idempotency    │
+└──────────────────┘  └──────────────────┘  └───────────────────────┘
 ```
 
-### E. Node.js opcional
+### 4.1 Builders puros
 
-Core en Python (existente). Node solo en los publishers email/portal, reutilizando
-código ya probado del ref (versiones pinneadas). Cada wrapper verifica la
-disponibilidad del runtime y falla con mensaje claro sin romper el core.
+Deben cumplir `mismo input lógico + misma versión → mismo output lógico`:
 
-### F. Versionamiento y compatibilidad de schemas
+- parsing y normalización;
+- cálculo de reglas;
+- ensamblaje del snapshot;
+- proyección estudiante;
+- proyección docente;
+- proyección BI;
+- previews de email;
+- HTML base antes de incorporar secretos o metadata operacional.
 
-`schemaVersion` en todo contrato canónico. SemVer: minor retrocompatible; major exige
-paso de migración o archivo nuevo. La validación de schema es un **gate obligatorio**:
-el pipeline falla, no advierte.
+### 4.2 Ejecutores con efectos
 
-### G. Protección PII y secretos
+No se consideran deterministas. Deben ser idempotentes, auditables y reanudables:
 
-Por defecto mínimo: RUT truncado/hasheado en artefactos públicos, sin emails ni
-feedback en el portal salvo configuración explícita, `.env` gitignored (con
-`.env.example`), logs de email sin cuerpos ni destinatarios completos.
-`evidencia_drive/` y submissions quedan fuera del repo por gitignore.
+- generación/rotación de claves;
+- publicación a hosting;
+- revoke/purge;
+- envío SMTP;
+- logging operacional;
+- reintentos;
+- actualización de ledger.
 
-### H. Idempotencia, auditoría y confirmación de envíos
+## 5. Límite de datos
 
-Email con dry-run por defecto, confirmación humana por batch, estado por batch que
-salta ya-enviados, log CSV con messageId. Export/publishers deterministas
-(mismo input → mismo output byte a byte).
-
-### I. Seguridad del portal
-
-Aislamiento por **fragmentos por estudiante** (nunca dataset global servible), acceso
-por **códigos PBKDF2(250k)** en hosting estático. `publish` bloqueado si no hay hosting
-seguro configurado.
-
-### J. Papel del modelo relacional 3FN
-
-Modelo de información **derivado** (nunca canónico) que informa a tres audiencias:
+Se distinguen cuatro zonas:
 
 ```text
-canonical results.json
-        │  export-relational-3fn.sh (determinista)
-        ▼
-┌─ TABLAS TRANSACCIONALES (25) ── uso interno, PII, nunca públicas
-│   source_documents, evaluation_results, student_grade_adjustments,
-│   student_grade_components, grade_calculation_runs, students, evaluations, IEs
-│
-├─ VISTAS DE CONSULTA ── docente
-│   distribuciones por nivel/forma/EV, revisión de feedback, desglose NP/ET/bonos
-│
-├─ VISTA ESTUDIANTE ── portal
-│   student_portal.json → fragmento por estudiante, solo datos propios
-│
-└─ VISTAS BI ── directiva/institucional (SOLO agregados, sin PII)
-    course_summary, performance_level_distribution, section_averages,
-    bonus_impact, missing_submissions, comparativas por forma/sección
+source-controlled code
+runtime private data
+runtime operational state
+publishable artifacts
 ```
 
-Regla anti-fuga BI: celdas con n < umbral se suprimen. La directiva nunca recibe datos
-a nivel de estudiante individual; el docente sí (es su sección).
+### Source-controlled code
 
-## Decisiones (D1–D12)
+Código, schemas, fixtures sintéticos, documentación y ejemplos sanitizados.
 
-| # | Decisión | Alternativas | Recomendación |
-|---|---|---|---|
-| D1 | Fuente canónica | .md único / **results.json + .md como evidencia** / grades.json único | results.json como fuente máquina |
-| D2 | Modelo de publicación | anidado results.json / flat + índices / relacional canónico | results.json + grades.json (vista estable) + índices |
-| D3 | Papel 3FN | contrato central / **modelo de información derivado (3 audiencias)** / solo vistas | proyección derivada, no canónica |
-| D4 | Reglas de calificación | hardcoded / **declarativas grade-rules.json** / mixto | declarativas (data-driven, cualquier docente) |
-| D5 | Runtime publishers | todo Python / **Node para email+portal (reuso)** / reescribir | Node opcional, gate por disponibilidad |
-| D6 | Versionado schemas | sin versionar / **semver + gates** / doble schema | semver + validación obligatoria |
-| D7 | PII | completa / **mínima por defecto** / config por artefacto | mínima + opt-in explícito |
-| D8 | Envío email | directo / **dry-run default + confirmación** | dry-run default + confirmación por batch |
-| D9 | Portal | dataset global / **fragmentos por estudiante + codes** / hosting auth obligatorio | fragmentos + codes PBKDF2 en hosting estático |
-| D10 | Convenciones support/raw | impuestas / **documentadas opcionales** / omitidas | opcionales, validadas por workspace-status |
-| D11 | AVA adapter | ya idéntico, tocar / **congelar** | congelar (no es gap) |
-| D12 | Discovery no determinista | fusionado al core / **capa separada, humana-gate** | capa separada; output aprobado → config determinista |
+### Runtime private data
 
-## Email: contrato de diseño
+Roster, RUT, emails, entregas, feedback privado y snapshots completos. Nunca se versiona.
 
-- **Entrada**: `{studentId, rut(masked), name, email, evId, form}` desde `--from-roster`
-  o CSV de `build-student-email-recipients.sh` (join roster + grades). Filtro opt-in,
-  dedupe por `studentId`.
-- **Destinatarios**: `exports/email/recipients-<batch>.csv` revisable antes de enviar.
-- **Dry-run (default)**: previews HTML en `exports/email/preview-<batch>/`, resumen con
-  emails enmascarados (`j***@***.com`).
-- **Confirmación**: envío requiere `--send --batch <id>` + prompt con conteo. SMTP real
-  con credenciales en `.env` gitignored.
-- **Idempotencia**: estado `exports/email/state/<batch>.json` con messageId por estudiante;
-  re-ejecutar salta ya-enviados; `--force` solo re-envía explícito.
-- **Duplicados**: dedupe por `(studentId, batchId, email)` + log global que rechaza el
-  mismo EV dentro de una ventana configurable (default 7 días).
-- **Auditoría**: `exports/email/logs/send-log-<batch>.csv` con estudiante enmascarado,
-  messageId, status, timestamp, intento. Sin cuerpos.
-- **Reintentos**: por destinatario, 2 reintentos con backoff (2s, 5s); el batch continúa;
-  error SMTP de conexión → retry del batch.
-- **Errores**: try/catch por destinatario (nunca aborta el batch); plantilla inválida →
-  fail-fast en dry-run.
-- **PII**: cuerpos solo con nombre + resultados propios; estado/logs gitignored.
-- **Pruebas**: unit tests de `lib/` (puerto del ref), dry-run con transporte JSON de
-  nodemailer, golden-file de plantillas, test de estado que previene duplicados.
+### Runtime operational state
 
-## Portal: diseño
+Ledgers de envío, locks, receipts, claves y metadata de publicación. Persistente y
+respaldable, pero fuera de Git y fuera de artefactos regenerables.
 
-- **Aislamiento**: un fragmento HTML/JSON por estudiante; el directorio de salida NO
-  contiene dataset global. Sin código → solo el fragmento del portador es visible.
-- **Estático**: el hosting sirve exactamente el contenido de
-  `exports/student-results-web/`.
-- **Autenticación**: códigos PBKDF2(250k) que desbloquean el fragmento propio. Los
-  códigos/enlaces se entregan por el pipeline de email.
-- **Publicación/revocación**: `publish` copia al destino configurado y exige flag
-  explícito; `revoke` borra o rota; `purge` aplica retención. Sin `PORTAL_BASE_URL`
-  https configurada → publish falla.
-- **Retención**: últimas N builds (default 5), `purge` elimina las antiguas.
-- **Comparativas permitidas**: solo agregados de curso (promedio/min/max) y comparación
-  del estudiante vs promedio. Prohibido ranking que revele identidades.
-- **Dataset**: score, nota, componentes EV1–EV4, NP/ET, bonos, desglose de IEs
-  (niveles/puntos), feedback solo si el docente lo habilita.
-- **Estándar vs hosting**: el workspace define el contrato de build y los gates; el
-  hosting provee TLS/control de acceso. Se documenta una *hosting checklist*.
+### Publishable artifacts
+
+Solo proyecciones mínimas, validadas para una audiencia concreta.
+
+## 6. Identidad de estudiantes
+
+El core usa un identificador opaco estable:
+
+```json
+{
+  "studentId": "stu_01J...",
+  "externalIdentifiers": {
+    "rut": "...",
+    "avaUser": "..."
+  }
+}
+```
+
+- `studentId` es la única clave transversal en contratos internos.
+- RUT, email y otros identificadores externos permanecen en el store privado.
+- Un hash simple de RUT no es una anonimización aceptable.
+- Los publishers reciben únicamente los campos necesarios para su audiencia.
+
+## 7. Configuración y autoridad
+
+### `section-config.json`
+
+Responsable de metadata estructural:
+
+- curso y sección;
+- periodo;
+- evaluaciones;
+- formas;
+- fechas;
+- tipos;
+- referencias a policy;
+- configuración de publicación no secreta.
+
+### `grade-policy.json`
+
+Única autoridad para:
+
+- escala;
+- ponderaciones;
+- tratamiento de faltantes;
+- ajustes;
+- bonos;
+- reemplazos;
+- topes;
+- redondeo.
+
+Los pesos no se duplican entre `section-config.json`, defaults y policy. La config puede
+referenciar componentes; la policy decide cómo se calculan.
+
+### Defaults
+
+Solo valores de inicialización. No participan silenciosamente en una publicación una
+vez que existe una policy explícita.
+
+## 8. Proyecciones por audiencia
+
+### 8.1 Estudiante
+
+Documento individual con sus resultados, componentes y feedback permitido. No depende
+del export 3FN.
+
+### 8.2 Docente/auditoría
+
+Proyección detallada y trazable. Puede materializarse como tablas relacionales 3FN si
+existe un consumidor concreto. No se publica en el mismo directorio que el portal.
+
+### 8.3 Directiva/BI
+
+Agregados sin PII, gobernados por una política anti-inferencia. No se deriva mediante una
+simple selección de columnas desde tablas privadas: tiene contrato y validación propios.
+
+## 9. Portal
+
+Se soportan dos modos:
+
+1. **Hosting autenticado**: preferido cuando exista infraestructura con autorización real.
+2. **Hosting estático cifrado**: un blob AES-GCM por estudiante, objeto no enumerable y
+   capacidad de alta entropía entregada en el fragmento de URL. El fragmento no llega al
+   servidor.
+
+No se considera seguro:
+
+- ocultar datos con JavaScript;
+- publicar JSON en texto plano y pedir un código;
+- usar PINs cortos protegidos solo por PBKDF2;
+- asumir que TLS equivale a autorización.
+
+## 10. Email
+
+El flujo es de dos fases:
+
+```text
+prepare → previewHash → human approval → execute → durable ledger
+```
+
+La aprobación queda ligada al hash exacto de destinatarios, plantilla y payload. Si el
+contenido cambia, la aprobación queda invalidada.
+
+## 11. Lifecycle académico
+
+Estados mínimos:
+
+```text
+draft → reviewed → approved → published
+                         ├──▶ superseded
+                         ├──▶ corrected
+                         └──▶ revoked
+```
+
+Un email no tiene rollback. Una publicación retirada puede persistir en caché o haber
+sido descargada. La arquitectura define acciones compensatorias, no reversión ficticia.
+
+## 12. Alcance genérico V1
+
+La versión inicial soporta:
+
+- evaluaciones individuales o por forma;
+- rúbricas cuantitativas;
+- escalas configurables;
+- ponderaciones;
+- faltantes;
+- bonos, topes, ajustes y reemplazos mediante operadores registrados;
+- una o más evaluaciones por sección;
+- proyecciones por audiencia.
+
+No se promete soporte universal. Trabajo grupal con componentes individuales, múltiples
+intentos, evaluaciones puramente cualitativas y reglas institucionales excepcionales se
+incorporan mediante extension points explícitos y contratos versionados.
+
+## 13. Decisiones D1–D12 revisadas
+
+| ID | Decisión revisada |
+|---|---|
+| D1 | `results.json` es contrato canónico de resultados; el Publication Snapshot es la unidad reproducible. |
+| D2 | `section-config` contiene estructura; `grade-policy` es autoridad exclusiva de cálculo. |
+| D3 | 3FN es una proyección docente opcional, no dependencia de portal ni BI. |
+| D4 | Reglas con operadores cerrados, tipados y versionados; no DSL textual libre. |
+| D5 | Node.js opcional solo detrás de contratos de publishers. |
+| D6 | Schemas SemVer, validación sintáctica y semántica; determinismo solo para builders puros. |
+| D7 | PII fuera de Git, identidad opaca, data minimization por audiencia. |
+| D8 | Email prepare/approve/execute con hash y ledger durable. |
+| D9 | Portal autenticado o cifrado con capability de alta entropía. |
+| D10 | `support/` y `raw/` son convenciones opcionales con clasificación de datos. |
+| D11 | AVA queda congelado; se trata como adapter institucional existente. |
+| D12 | Discovery solo propone instancias compatibles con schemas existentes. |
+
+## 14. Condición de inicio de implementación
+
+No se inicia C1 hasta que estén aprobados:
+
+- ADR-0001 a ADR-0011;
+- threat model y límites de datos;
+- perfil soportado V1;
+- contrato de reglas;
+- estructura de almacenamiento por sección/publicación;
+- fixtures completamente sintéticos.
