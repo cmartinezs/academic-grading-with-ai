@@ -1,0 +1,16 @@
+{
+  "description": "Synthetic case: roster entries without any personal identifier (rut or email) cannot be mapped to an opaque studentId deterministically.",
+  "students": [
+    {
+      "order": 1,
+      "names": "Estudiante",
+      "lastName": "SinIdentificador"
+    },
+    {
+      "order": 2,
+      "names": "Segundo",
+      "lastName": "SinIdentificador"
+    }
+  ],
+  "expected": "identity assignment should fail because no stable identifier exists"
+}

@@ -1,0 +1,7 @@
+{
+  "private": "/opt/academic-grading-with-ai/private",
+  "state": "/opt/academic-grading-with-ai/state",
+  "publications": "/opt/academic-grading-with-ai/publications",
+  "temp": "/opt/academic-grading-with-ai/tmp",
+  "_comment": "Copy to runtime.json and adjust paths. All roots MUST live outside the Git worktree; they are created with owner-only permissions."
+}

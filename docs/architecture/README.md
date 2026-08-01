@@ -23,7 +23,7 @@ El archivo `ANALYSIS_FPY1101_vs_BASE.md` se conserva solo como registro históri
 | [07-grade-policy-contract.md](07-grade-policy-contract.md) | Nuevo; contrato tipado de reglas |
 | [08-migration-strategy.md](08-migration-strategy.md) | Nuevo; evolución compatible desde el workspace actual |
 | [09-verification-strategy.md](09-verification-strategy.md) | Nuevo; estrategia de pruebas y gates |
-| [ADRs](ADRs/) | ADR-0001 a ADR-0011 revisados/propuestos |
+| [ADRs](ADRs/) | ADR-0001 a ADR-0011 aprobados (2026-08-01); C0 autorizado para implementación |
 
 ## Línea base validada
 
@@ -79,5 +79,13 @@ pero no es suficiente por sí solo para reproducir una publicación.
 4. Revisar [07-grade-policy-contract.md](07-grade-policy-contract.md).
 5. Revisar [08-migration-strategy.md](08-migration-strategy.md) y
    [09-verification-strategy.md](09-verification-strategy.md).
-6. Aprobar ADR-0001 a ADR-0011.
+6. ADR-0001 a ADR-0011 aprobados (2026-08-01).
 7. Ejecutar el roadmap C0–C7 de [04-roadmap.md](04-roadmap.md).
+
+## Estado de implementación
+
+- **C0** — Autorizado. Implementación en `feat/c0-security-data-boundaries`:
+  límites de almacenamiento, clasificación, identidad opaca, migración segura,
+  scanner de PII/secretos, fixtures sintéticos, workspace status y runbooks.
+  Detalle en [docs/implementation/C0-IMPLEMENTATION-PLAN.md](../implementation/C0-IMPLEMENTATION-PLAN.md).
+- **C1–C7** — Pendientes. No deben implementarse como parte de C0.

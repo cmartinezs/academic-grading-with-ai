@@ -13,6 +13,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from c0.status import findings_for_workspace_status, run_security_checks  # noqa: E402
+
 
 @dataclass
 class Finding:
@@ -563,13 +567,21 @@ def main() -> int:
     env_findings = check_environment(selected_section_dirs)
     sections = [analyze_section(section_dir) for section_dir in selected_section_dirs]
 
+    c0_report = run_security_checks(ROOT)
+    c0_findings = [Finding(**item) for item in findings_for_workspace_status(c0_report)]
+
     payload = to_payload(workspace_findings, env_findings, selection_findings, sections)
+    payload["c0Security"] = c0_report.to_dict()
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print_report(workspace_findings, env_findings, selection_findings, sections)
+        print("\n## C0 security gates")
+        print(f"State: {c0_report.worst_state()}")
+        for finding in c0_findings:
+            print(f"[{finding.level}] {finding.path}: {finding.message}")
 
-    all_findings = workspace_findings + env_findings + selection_findings
+    all_findings = workspace_findings + env_findings + selection_findings + c0_findings
     for section in sections:
         all_findings.extend(section.findings)
         for ev in section.evaluations:

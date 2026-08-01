@@ -19,10 +19,22 @@ evaluations/*/*/students.json
 evaluations/*/*/assignments.json
 evaluations/*/*/form-*/results/
 
-# Target architecture runtime roots
-runtime/private/
-runtime/publications/
-runtime/state/
+# Private keys, keystores and local session material
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/secrets.json
+**/capabilities/
+**/email-ledger/
+
+# Target architecture runtime roots (all zones; in-repo fallback)
+runtime/
+
+# Local runtime configuration (contains private root paths)
+runtime.json
+!runtime.example.json
 
 # Generated/private outputs
 exports/publication-input/

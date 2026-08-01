@@ -1,0 +1,9 @@
+rut,names,lastName,secondLastName,order,repoUrl,avaUser
+11.111.111-1,María José,González,Pérez,1,git@example.test:mariagonzalez/repo.git,mgonzalez
+12.222.222-2,Carlos Andrés,Rojas,Muñoz,2,git@example.test:carlosrojas/repo.git,crojas
+13.333.333-3,Valentina Paz,Díaz,Soto,3,git@example.test:valentinadiaz/repo.git,vdiaz
+14.444.444-4,Joaquín Alberto,Silva,Vargas,4,git@example.test:joaquinsilva/repo.git,jsilva
+15.555.555-5,Camila Fernanda,Morales,Rivera,5,git@example.test:camilamorales/repo.git,cmorales
+16.666.666-6,Benjamín Andrés,Castro,Guerrero,6,git@example.test:benjamincastro/repo.git,bcastro
+17.777.777-7,Isidora Catalina,Sepúlveda,Flores,7,git@example.test:isidorasepulveda/repo.git,isepulveda
+18.888.888-8,Matías Nicolás,Reyes,Contreras,8,git@example.test:matiasreyes/repo.git,mreyes

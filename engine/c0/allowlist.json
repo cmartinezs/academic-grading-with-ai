@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "comment": "Explicit allow-list for approved synthetic fixtures, fictional onboarding material and example templates. No wildcard rule entries are permitted and high-confidence rules (private keys, service tokens, .env files) can never be allow-listed.",
+  "entries": [
+    {
+      "path": "engine/c0/fixtures/synthetic/**",
+      "rules": ["chilean-rut", "email", "roster-file", "submissions-dir", "results-dir"],
+      "reason": "Approved synthetic C0 fixtures: zero real data, reserved example domains only."
+    },
+    {
+      "path": "onboarding/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "Fictional onboarding practice material with reserved example domains."
+    },
+    {
+      "path": "automation/ava/config.example.json",
+      "rules": ["secret-assignment"],
+      "reason": "Example AVA configuration with placeholder values only."
+    },
+    {
+      "path": "**/.env.example",
+      "rules": ["secret-assignment"],
+      "reason": "Example environment template without real secrets."
+    },
+    {
+      "path": "engine/c0/tests/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "Synthetic tests use fictional RUT/email-shaped identifiers; secret detection stays active."
+    }
+  ]
+}
