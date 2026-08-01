@@ -111,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Show the lifecycle state and published snapshots for the section.")
 
+    p_reconcile = sub.add_parser("reconcile", help="Idempotently reconcile approved snapshots with the lifecycle ledger.")
+    p_reconcile.add_argument(
+        "--publication", help="Restrict reconciliation to a single approved publication.",
+    )
+
     p_discard = sub.add_parser("discard", help="Remove the staging draft for this publication.")
     p_discard.add_argument("--publication", help="PublicationId whose staging is discarded (defaults to current).")
 
@@ -268,6 +273,17 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_reconcile(args) -> int:
+    ctx = make_context(args)
+    actions = builder.reconcile(ctx)
+    if not actions:
+        print("Reconciliation: nothing to do (consistent).")
+        return 0
+    for action in actions:
+        print(f"  {action}")
+    return 0
+
+
 def cmd_discard(args) -> int:
     if args.publication:
         ctx = make_context(args, publication_id=args.publication)
@@ -286,6 +302,7 @@ COMMANDS = {
     "transition": cmd_transition,
     "compatibility": cmd_compatibility,
     "status": cmd_status,
+    "reconcile": cmd_reconcile,
     "discard": cmd_discard,
 }
 

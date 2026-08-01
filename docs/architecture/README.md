@@ -91,6 +91,11 @@ pero no es suficiente por sí solo para reproducir una publicación.
 - **C1** — Autorizado. Implementación en `feat/c1-publication-snapshot-lifecycle`:
   snapshots de publicación deterministas e inmutables (manifest, hashes, provenance),
   staging y promoción atómica, review/approval ligado al hash, ledger de lifecycle
-  append-only y vistas de compatibilidad derivadas de snapshots aprobados.
+  append-only y vistas de compatibilidad derivadas de snapshots aprobados. Incluye la
+  corrección de los 55 hallazgos P0 del review: hashes de tres capas (per-file/content/
+  review), locks por sección+publicación, estados estrictos (`nonexistent`), recibo de
+  `published` separado del estado académico, privacidad en CLI, generación de
+  compatibilidad con verificación previa y fallo-cerrado, y reconciliación idempotente
+  post-crash que nunca elimina snapshots promovidos.
   Detalle en [docs/implementation/C1-IMPLEMENTATION-PLAN.md](../implementation/C1-IMPLEMENTATION-PLAN.md).
 - **C2–C7** — Pendientes. No deben implementarse como parte de C1.

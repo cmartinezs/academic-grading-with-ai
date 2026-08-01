@@ -149,6 +149,7 @@ Invariante: refs sanitizados; ningún nombre de archivo que contenga RUT.
   "schemaVersion": "1.0.0",
   "publicationId": "pub_...",
   "contentHash": "<sha256 exacto>",
+  "reviewHash": "<sha256 exacto>",
   "reviewedBy": "user:reviewer-1",
   "reviewedAt": "2026-08-01T00:00:00Z",
   "status": "reviewed"
@@ -162,6 +163,7 @@ Invariante: refs sanitizados; ningún nombre de archivo que contenga RUT.
   "schemaVersion": "1.0.0",
   "publicationId": "pub_...",
   "contentHash": "<sha256 exacto>",
+  "reviewHash": "<sha256 exacto>",
   "approvedBy": "user:approver-1",
   "approvedAt": "2026-08-01T00:00:00Z",
   "confirmation": "approve",
@@ -169,8 +171,9 @@ Invariante: refs sanitizados; ningún nombre de archivo que contenga RUT.
 }
 ```
 
-Invariante: `reviewedBy`/`approvedBy` son IDs de auditoría; nunca emails. La aprobación
-queda ligada al `contentHash` exacto.
+Invariante: `reviewedBy`/`approvedBy` son IDs de auditoría; nunca emails. La revisión y la
+aprobación quedan ligadas al `reviewHash` exacto (y por ende al `contentHash`); el
+`contentHash` y el `reviewHash` deben coincidir con los del manifest y entre sí.
 
 ## 5. Serialización determinista
 
@@ -193,10 +196,12 @@ json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
   "supersedesPublicationId": null,
   "correctsPublicationId": null,
   "contentHash": "<sha256>",
+  "reviewHash": "<sha256>",
   "engineVersion": "0.1.0",
   "adapterVersion": "0.1.0",
   "policySnapshotVersion": "1.0.0",
   "createdAt": "2026-08-01T00:00:00Z",
+  "builtAt": "2026-08-01T00:00:00Z",
   "approvedAt": "2026-08-01T00:00:00Z",
   "approvedBy": "user:approver-1",
   "files": {
@@ -212,7 +217,11 @@ Invariantes manifest:
 
 - Todos los archivos declarados existen y su `size`/`sha256` son correctos.
 - No hay archivos fuera de los declarados.
-- `contentHash` reproducible sobre `canonical/*` + `provenance/*`.
+- `contentHash` reproducible sobre `canonical/*` + `provenance/*`, ignorando solo
+  claves volátiles operacionales (`generatedAt`, `builtAt`).
+- `reviewHash` liga el `contentHash` al núcleo inmutable del manifest
+  (`sectionId`, `publicationId`, `supersedes`/`corrects`, versiones de engine/adapter/policy)
+  más la clasificación/audiencia y hash de cada archivo.
 - `supersedesPublicationId` y `correctsPublicationId` mutuamente exclusivos y ≠ propio id.
 - Sin paths absolutos, RUT, email, secrets, hostnames personales, username ni capabilities.
 
@@ -228,8 +237,19 @@ Ubicación: `<state-root>/publications/<sectionId>/lifecycle-ledger.jsonl` (appe
 {"schemaVersion":"1.0.0","seq":5,"event":"corrected","publicationId":"pub_A","byPublicationId":"pub_B","reason":"...","at":"...","actor":"user:ops-1"}
 ```
 
-Estados derivados: `created → reviewed → approved → published` y terminales
+Estados derivados: `nonexistent → created → reviewed → approved → published` y terminales
 `superseded | corrected | revoked` (gana el último evento por `seq`).
+
+Reglas:
+
+- `nonexistent` es un estado distinto de `created`; un `created` duplicado se rechaza.
+- Cada append valida todos los eventos existentes (schema + `seq` continuo) antes de escribir.
+- `actor` es obligatorio, no-email y sanitizado (`[A-Za-z0-9._-]{1,64}`).
+- `published` es un recibo: exige `receipt` y un snapshot aprobado, pero nunca cambia el
+  estado académico (`approved` permanece).
+- `superseded`/`corrected` exigen `byPublicationId != publicationId`, una callback de
+  validación profunda (el referenciado existe, está aprobado, verifica y declara el
+  `supersedes`/`corrects` esperado) y `--confirm approve`.
 
 ## 8. Vistas de compatibilidad
 
@@ -241,8 +261,14 @@ Cada vista declara:
 - `canonicalSourceHash`
 
 Vistas: `evaluations.json`, `grades.json` y bundle legacy `course/*` (course, students,
-evaluations, results, course-summary). Se generan únicamente desde un snapshot aprobado,
-con `compatibility --generate`; los aliases legacy requieren `--update-legacy-aliases`.
+evaluations, results, course-summary). Se generan únicamente desde un snapshot aprobado:
+
+- La generación verifica primero el snapshot aprobado completo (inmutable) y se bloquea
+  si está `revoked`/`superseded`/`corrected`.
+- Los archivos se preparan bajo staging y se promueven atómicamente al destino; un fallo
+  deja cero archivos en el destino y la sobrescritura se rechaza explícitamente.
+- Los aliases legacy (`legacy/*`) son contenido exacto sin wrapper de envelope, acompañados
+  de un sidecar `legacy/PROVENANCE.json`; requieren `--update-legacy-aliases`.
 
 ## 9. Exit codes CLI
 
@@ -267,3 +293,7 @@ con `compatibility --generate`; los aliases legacy requieren `--update-legacy-al
 13. Timestamps/metadata volátil no contaminan el hash lógico.
 14. Datos privados, publicaciones y estado operacional permanecen separados.
 15. No se versiona ningún snapshot real; tests solo con datos sintéticos.
+16. Un snapshot promovido nunca se elimina para simular un rollback; la reconciliación
+    (`reconcile`) restaura permisos y eventos faltantes de forma idempotente.
+17. La generación de compatibilidad verifica el snapshot aprobado antes de escribir y
+    falla cerrado si el origen está revocado/superseded/corregido.

@@ -21,28 +21,30 @@ fija timestamps reproducibles en builds. `SECTION_CODE` selecciona la sección.
 export SECTION_CODE=FP2111-S1
 ./scripts/export-results.sh                      # regenera exports/publication-input/
 
-# 1. build: genera staging + manifest + contentHash (imprime ContentHash)
+# 1. build: genera staging + manifest + contentHash + reviewHash (imprime ambos)
 ./scripts/publication-snapshot.sh --section "$SECTION_CODE" build
 
-# 2. review: liga la revisión al hash exacto (el build imprime ContentHash)
-HASH=<contentHash-impreso-por-build>
+# 2. review: liga la revisión al reviewHash exacto (el build imprime ReviewHash)
+RH=<reviewHash-impreso-por-build>
 ./scripts/publication-snapshot.sh --section "$SECTION_CODE" verify --target staging
-./scripts/publication-snapshot.sh --section "$SECTION_CODE" review --content-hash "$HASH" --reviewer reviewer-a
+./scripts/publication-snapshot.sh --section "$SECTION_CODE" review --review-hash "$RH" --reviewer reviewer-a
 
 # 3. approve: promueve de forma atómica (requiere confirmación explícita)
-./scripts/publication-snapshot.sh --section "$SECTION_CODE" approve --content-hash "$HASH" --approver approver-a --confirm approve
+./scripts/publication-snapshot.sh --section "$SECTION_CODE" approve --review-hash "$RH" --approver approver-a --confirm approve
 
 # 4. publicar y generar vistas de compatibilidad
 ./scripts/publication-snapshot.sh --section "$SECTION_CODE" transition --event published --actor ops --receipt <REF>
 ./scripts/publication-snapshot.sh --section "$SECTION_CODE" compatibility --update-legacy-aliases
 ```
 
-Para recuperar el `contentHash` de un staging ya construido:
+Para recuperar el `reviewHash` de un staging ya construido:
 
 ```bash
-python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['contentHash'])" \
+python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['reviewHash'])" \
   "<TEMP_ROOT>/publication-staging/$SECTION_CODE/<PUB_ID>/manifest.json"
 ```
+
+`--content-hash` es opcional en `review`/`approve` como comprobación cruzada adicional.
 
 ## Verificación
 
@@ -72,12 +74,23 @@ deja un evento en el ledger append-only.
 | Build fallido | exit `2`, sin snapshot en publications | `discard` del staging |
 | Escritura falla en staging | staging parcial, publications intacto | `discard` del staging |
 | Crash pre-rename | staging recuperable | `discard` del staging |
+| Crash post-rename / pre-`approved` | snapshot promovido con eventos faltantes | `reconcile` |
 | Destino existente | exit `1` `DestinationExistsError` | nuevo `publicationId` |
-| Review con hash distinto | exit `2` `ContentHashMismatchError` | rebuild/review |
+| Review con hash distinto | exit `2` `ReviewHashMismatchError` | rebuild/review |
 | Cambio post-review | exit `2` al aprobar | nuevo review |
 | Approval sin review | exit `1` `NotReviewedError` | revisar primero |
 | Tampering post-aprobación | `verify --target approved` falla | crear corrección |
 | Transición inválida | exit `1` `InvalidTransitionError` | corregir comando |
+
+Recuperación de crash post-promoción (idempotente; nunca elimina un snapshot promovido):
+
+```bash
+./scripts/publication-snapshot.sh --section "$SECTION_CODE" --publication <PUB_ID> reconcile
+```
+
+`reconcile` restaura permisos read-only en snapshots promovidos con permisos de
+escritura y añade los eventos académicos faltantes en el ledger; volver a ejecutarlo
+no produce cambios. Los fallos de integridad se reportan sin borrar el snapshot.
 
 Discard de staging:
 
