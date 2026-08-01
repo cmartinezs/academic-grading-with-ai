@@ -12,15 +12,20 @@ global legacy path).
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 
+from .builder import check_same_filesystem
 from .clock import Clock
-from .errors import PublicationError
+from .errors import DestinationExistsError, PublicationError
 from .jsonutil import read_json, write_json
+from .lifecycle import TERMINAL_EVENTS
+from .locking import publication_lock
 from .schemas import SCHEMA_VERSION, validate_compatibility_view
-from .verify import VerifyReport, gate_privacy
+from .verify import VerifyReport, gate_privacy, verify_snapshot
 
 GENERATED_BY = "publication-snapshot/compat/v1"
 
@@ -157,8 +162,12 @@ def generate(
 ) -> list[str]:
     """Generate compatibility views from the approved snapshot for this context.
 
-    Returns the list of written relative paths. Fails closed if the snapshot is
-    not approved or if any generated view violates the envelope contract.
+    The full approved snapshot is verified first; generation from a revoked,
+    superseded or corrected snapshot is blocked. Envelopes are staged under the
+    temp root, validated (schema + privacy) and only then atomically promoted,
+    so a failure never leaves partial views at the destination. The versioned
+    destination rejects overwrites; legacy aliases are exact-contract content
+    (no envelope wrapper) carrying provenance in a sidecar.
     """
     dest = ctx.destination_dir()
     if not dest.is_dir():
@@ -167,6 +176,17 @@ def generate(
     if manifest.get("status") != "approved":
         raise PublicationError(
             f"Compatibility views require an approved snapshot (status={manifest.get('status')!r})."
+        )
+    report = verify_snapshot(dest, ctx.section_id, ctx.publication_id, immutable=True)
+    if not report.passed():
+        raise PublicationError(
+            "Approved snapshot fails verification; refusing to generate views. "
+            + "; ".join(f.message for f in report.findings)
+        )
+    state = ctx.ledger().current_state(ctx.publication_id)
+    if state in TERMINAL_EVENTS:
+        raise PublicationError(
+            f"Cannot generate compatibility views from a {state} snapshot."
         )
 
     canonical = {
@@ -193,27 +213,88 @@ def generate(
             raise PublicationError(f"Compatibility view failed validation ({rel}): {errors}")
         envelopes[rel] = envelope
 
-    written: list[Path] = []
+    staging = ctx.runtime.temp_root / "compat-staging" / ctx.section_id / ctx.publication_id
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
     for rel, envelope in envelopes.items():
-        path = (out_dir or _view_root(ctx)) / rel
-        write_json(path, envelope)
-        written.append(path)
+        write_json(staging / rel, envelope)
 
-    if update_legacy_aliases:
-        alias_root = legacy_alias_dir(ctx, ctx.section_id)
-        for rel, envelope in envelopes.items():
-            write_json(alias_root / rel, envelope)
-
-    report = VerifyReport(root=Path())
-    files = {path.relative_to(_view_root(ctx)).as_posix(): path for path in written}
-    gate_privacy(report, _view_root(ctx), files)
+    report = VerifyReport(root=staging)
+    files = {rel: staging / rel for rel in envelopes}
+    gate_privacy(report, staging, files)
     content_findings = _content_findings(report)
     if content_findings:
+        shutil.rmtree(staging, ignore_errors=True)
         raise PublicationError(
             "Compatibility views contain PII or unsafe patterns: "
             + "; ".join(content_findings)
         )
-    return sorted(set(envelopes) | ({"legacy/" + rel for rel in envelopes} if update_legacy_aliases else set()))
+
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        target = Path(out_dir) if out_dir is not None else _view_root(ctx)
+        if target.exists():
+            raise DestinationExistsError(
+                f"Compatibility views already exist at {target}; refusing to overwrite."
+            )
+        check_same_filesystem(staging, target.parent)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(staging, target)
+
+    written = [rel for rel in envelopes]
+    if update_legacy_aliases:
+        written.extend(
+            _commit_legacy_aliases(ctx, content, manifest)
+        )
+    return sorted(set(written))
+
+
+def _commit_legacy_aliases(ctx, content: dict[str, dict], manifest: dict) -> list[str]:
+    """Atomically update the exact legacy-contract aliases + provenance sidecar.
+
+    Alias files carry the bare view content (no envelope wrapper) so legacy
+    consumers are unaffected; provenance lives in a sidecar ``PROVENANCE.json``.
+    """
+    alias_root = legacy_alias_dir(ctx, ctx.section_id)
+    staging = ctx.runtime.temp_root / "compat-alias-staging" / ctx.section_id
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    for rel, view_content in content.items():
+        write_json(staging / rel, view_content)
+    write_json(
+        staging / "PROVENANCE.json",
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "generatedBy": GENERATED_BY,
+            "sourcePublicationId": ctx.publication_id,
+            "canonicalSourceHash": manifest["contentHash"],
+            "generatedAt": ctx.clock.iso(),
+        },
+    )
+
+    report = VerifyReport(root=staging)
+    files = {path.relative_to(staging).as_posix(): path for path in staging.rglob("*") if path.is_file()}
+    gate_privacy(report, staging, files)
+    content_findings = _content_findings(report)
+    if content_findings:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise PublicationError(
+            "Legacy aliases contain PII or unsafe patterns: "
+            + "; ".join(content_findings)
+        )
+
+    alias_root.mkdir(parents=True, exist_ok=True)
+    written = []
+    for path in sorted(staging.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(staging).as_posix()
+        write_json(alias_root / rel, read_json(path))
+        written.append(f"legacy/{rel}")
+    shutil.rmtree(staging, ignore_errors=True)
+    return written
 
 
 def _view_root(ctx) -> Path:

@@ -33,6 +33,7 @@ from publication.errors import (
     LegacyCourseMismatchError,
     MissingLegacyExportError,
     NotReviewedError,
+    PublicationError,
     ReviewHashMismatchError,
     SchemaError,
     StagingExistsError,
@@ -1085,6 +1086,84 @@ class CompatTest(C1TestCase):
             envelope = json.loads((view_root / rel).read_text(encoding="utf-8"))
             self.assertEqual(envelope["sourcePublicationId"], "pub_a")
             self.assertEqual(schemas.validate_compatibility_view(envelope), [])
+
+
+# ---------------------------------------------------------------------------
+# P0 compatibility: verified source, revoked block, atomic staging, aliases
+# ---------------------------------------------------------------------------
+
+
+class CompatP0Test(C1TestCase):
+    def test_blocks_revoked_snapshot(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        ctx.ledger().append("revoked", "pub_a", actor="ops", reason="irregular")
+        with self.assertRaises(PublicationError):
+            compat.generate(ctx)
+
+    def test_blocks_superseded_snapshot(self):
+        ctx_a, _, _ = self.approve_flow("pub_a")
+        ctx_b, _, _ = self.approve_flow(
+            "pub_b", **{"supersedes_publication_id": "pub_a"}
+        )
+        ledger = ctx_b.ledger()
+        ledger.append(
+            "superseded", "pub_a", actor="ops", by_publication_id="pub_b",
+            validate_reference=lambda _by, _et: None,
+        )
+        with self.assertRaises(PublicationError):
+            compat.generate(ctx_a)
+
+    def test_rejects_overwrite(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx)
+        with self.assertRaises(DestinationExistsError):
+            compat.generate(ctx)
+
+    def test_zero_files_when_snapshot_tampered(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        path = dest / "canonical/results.json"
+        os.chmod(path, 0o600)
+        path.write_text('{"results": []}\n', encoding="utf-8")
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        with self.assertRaises(PublicationError):
+            compat.generate(ctx)
+        self.assertFalse(view_root.exists(), "no partial views on failure")
+
+    def test_aliases_are_exact_content_with_provenance_sidecar(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        results_alias = json.loads(
+            (alias_root / "course/results.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("content", results_alias, "alias must be bare content")
+        self.assertNotIn("sourcePublicationId", results_alias)
+        self.assertIn("results", results_alias)
+        provenance = json.loads(
+            (alias_root / "PROVENANCE.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(provenance["sourcePublicationId"], "pub_a")
+        self.assertEqual(provenance["canonicalSourceHash"], content_hash)
+
+    def test_consumer_views_match_canonical(self):
+        """A legacy-style consumer reads aliases and sees canonical semantics."""
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        aliased_results = json.loads(
+            (alias_root / "course/results.json").read_text(encoding="utf-8")
+        )["results"]
+        canonical = json.loads(
+            (dest / "canonical/results.json").read_text(encoding="utf-8")
+        )["results"]
+        by_attempt = {r["attemptId"]: r for r in canonical}
+        self.assertEqual(len(aliased_results), len(canonical))
+        for row in aliased_results:
+            source = by_attempt[row["attemptId"]]
+            self.assertEqual(row["score"], source["score"])
+            self.assertEqual(row["grade"], source["grade"])
+            self.assertEqual(row["status"], source["status"])
+            self.assertEqual(row["studentId"], source["studentId"])
 
 
 if __name__ == "__main__":
