@@ -138,6 +138,37 @@ def _run_workers(jobs) -> list:
         return pool.starmap(_mp_dispatch, jobs)
 
 
+def _mp_dispatch_compat(kind: str, base: str, section: str, pub: str, env: dict):
+    """Worker for compat operations on an already-approved snapshot (picklable)."""
+    from publication import builder, compat
+    from publication.clock import Clock
+
+    ctx = builder.BuildContext.resolve(
+        base, section, publication_id=pub, env=env, clock=Clock(env=env),
+        legacy_source=str(Path(base) / "legacy"),
+    )
+    try:
+        if kind == "compat_generate":
+            return ("ok", compat.generate(ctx, update_legacy_aliases=True))
+        elif kind == "compat_generate_replace":
+            return ("ok", compat.generate(ctx, update_legacy_aliases=True, replace_legacy_aliases=True))
+        elif kind == "compat_revoke":
+            ctx.ledger().append("revoked", pub, actor="ops", reason="concurrent")
+            return ("ok", None)
+        else:
+            raise ValueError(f"unknown kind: {kind}")
+    except Exception as exc:  # noqa: BLE001
+        return (type(exc).__name__, str(exc))
+
+
+def _run_workers_compat(jobs) -> list:
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("fork")
+    with ctx.Pool(len(jobs)) as pool:
+        return pool.starmap(_mp_dispatch_compat, jobs)
+
+
 class C1TestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.base = Path(tempfile.mkdtemp(prefix="c1-test-"))
@@ -1177,6 +1208,207 @@ class CompatP0Test(C1TestCase):
             self.assertEqual(row["status"], source["status"])
             self.assertEqual(row["studentId"], source["studentId"])
             self.assertEqual(row["ies"], source["components"])
+
+
+# ---------------------------------------------------------------------------
+# Final compat: concurrency, crash-before/after-rename, privacy zero-files
+# ---------------------------------------------------------------------------
+
+
+class CompatFinalTest(C1TestCase):
+    def _assert_views_complete(self, view_root, content_hash):
+        for envelope_path in sorted(view_root.rglob("*.json")):
+            envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+            self.assertEqual(envelope["sourcePublicationId"], "pub_a")
+            self.assertEqual(envelope["canonicalSourceHash"], content_hash)
+            self.assertEqual(schemas.validate_compatibility_view(envelope), [])
+            self.assertIn("content", envelope)
+
+    def test_simultaneous_generates_single_winner(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        jobs = [("compat_generate", str(self.base), SECTION, "pub_a", self.env) for _ in range(2)]
+        results = _run_workers_compat(jobs)
+        kinds = sorted(r[0] for r in results)
+        self.assertEqual(kinds, ["DestinationExistsError", "ok"], results)
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        self.assertTrue(view_root.is_dir())
+        self._assert_views_complete(view_root, content_hash)
+        staging = ctx.runtime.temp_root / "compat-staging" / SECTION / "pub_a"
+        self.assertFalse(staging.exists() and any(staging.iterdir()), "no staging leftovers")
+
+    def test_generate_vs_terminal_transition_serialize(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        results = _run_workers_compat([
+            ("compat_revoke", str(self.base), SECTION, "pub_a", self.env),
+            ("compat_generate", str(self.base), SECTION, "pub_a", self.env),
+        ])
+        outcomes = {r[0] for r in results}
+        self.assertLessEqual(outcomes, {"ok", "PublicationError"}, results)
+        if "ok" in outcomes:
+            view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+            if view_root.is_dir():
+                self._assert_views_complete(view_root, content_hash)
+
+    def test_crash_before_rename_leaves_no_destination(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        with mock.patch.object(compat, "_fsync_tree", side_effect=RuntimeError("crash before rename")):
+            with self.assertRaises(RuntimeError):
+                compat.generate(ctx)
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        self.assertFalse(view_root.exists(), "no views on crash before rename")
+        staging = ctx.runtime.temp_root / "compat-staging" / SECTION / "pub_a"
+        self.assertFalse(staging.exists() and any(staging.iterdir()), "own staging cleaned")
+
+    def test_crash_after_rename_leaves_complete_views(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        with mock.patch.object(compat, "_fsync_parent", side_effect=RuntimeError("crash after rename")):
+            with self.assertRaises(RuntimeError):
+                compat.generate(ctx)
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        self.assertTrue(view_root.is_dir(), "views promoted before the crash")
+        self._assert_views_complete(view_root, content_hash)
+        self.assertFalse(
+            [f for f in (ctx.runtime.temp_root / "compat-staging").rglob("*") if f.is_file()],
+            "no leftover staging files",
+        )
+
+    def test_privacy_failure_leaves_zero_destination_files(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+
+        def leaking_gate(report, root, files, known_names=None):
+            report.add("G6-privacy", "BLOCK pii-email: email address in feedback")
+
+        with mock.patch.object(compat, "gate_privacy", side_effect=leaking_gate):
+            with self.assertRaises(PublicationError):
+                compat.generate(ctx)
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        self.assertFalse(view_root.exists(), "zero destination files on privacy failure")
+
+
+# ---------------------------------------------------------------------------
+# Final aliases: atomic bundle failure injection
+# ---------------------------------------------------------------------------
+
+
+class AliasAtomicTest(C1TestCase):
+    def _alias_files(self, ctx):
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        if not alias_root.is_dir():
+            return {}
+        return {
+            path.relative_to(alias_root).as_posix(): json.loads(path.read_text(encoding="utf-8"))
+            for path in alias_root.rglob("*.json")
+        }
+
+    def _canonical_and_manifest(self, dest):
+        canonical = {
+            "section": json.loads((dest / "canonical/section.json").read_text(encoding="utf-8")),
+            "subjects": json.loads((dest / "canonical/subjects.json").read_text(encoding="utf-8")),
+            "assessments": json.loads((dest / "canonical/assessments.json").read_text(encoding="utf-8")),
+            "results": json.loads((dest / "canonical/results.json").read_text(encoding="utf-8")),
+            "policy": json.loads((dest / "canonical/policy.json").read_text(encoding="utf-8")),
+        }
+        manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+        return canonical, manifest
+
+    def _assert_no_alias_staging_files(self, ctx):
+        self.assertFalse(
+            [f for f in (ctx.runtime.temp_root / "compat-alias-staging").rglob("*") if f.is_file()],
+            "no leftover alias staging files",
+        )
+
+    def test_crash_writing_second_alias_file(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        alias_writes = {"count": 0}
+        real_write = compat.write_json
+
+        def flaky_write(path, payload):
+            if "compat-alias-staging" in str(path):
+                alias_writes["count"] += 1
+                if alias_writes["count"] == 2:
+                    raise RuntimeError("crash writing second alias file")
+            return real_write(path, payload)
+
+        with mock.patch.object(compat, "write_json", side_effect=flaky_write):
+            with self.assertRaises(RuntimeError):
+                compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        self.assertFalse(alias_root.exists(), "no partial alias bundle on crash")
+        self._assert_no_alias_staging_files(ctx)
+
+    def test_crash_before_alias_rename(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        real_fsync = compat._fsync_tree
+
+        def flaky_fsync(root):
+            if "compat-alias-staging" in str(root):
+                raise RuntimeError("crash before alias rename")
+            return real_fsync(root)
+
+        with mock.patch.object(compat, "_fsync_tree", side_effect=flaky_fsync):
+            with self.assertRaises(RuntimeError):
+                compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        self.assertFalse(alias_root.exists(), "no alias bundle on crash before rename")
+
+    def test_crash_after_backup_move_restores_old_bundle(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        before = self._alias_files(ctx)
+        self.assertTrue(before)
+        canonical, manifest = self._canonical_and_manifest(dest)
+
+        rename_calls = {"count": 0}
+        real_rename = os.rename
+
+        def flaky_rename(src, dst):
+            rename_calls["count"] += 1
+            if rename_calls["count"] == 2:
+                raise RuntimeError("crash after backup move, before promote")
+            return real_rename(src, dst)
+
+        with mock.patch.object(compat.os, "rename", side_effect=flaky_rename):
+            with self.assertRaises(RuntimeError):
+                compat._commit_legacy_aliases_locked(ctx, canonical, manifest, replace_existing=True)
+        self.assertTrue(alias_root.is_dir(), "old bundle restored on failure")
+        self.assertEqual(self._alias_files(ctx), before, "restored bundle is byte-identical")
+
+    def test_crash_after_promote_keeps_new_bundle(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        canonical, manifest = self._canonical_and_manifest(dest)
+
+        fsync_calls = {"count": 0}
+        real_fsync_parent = compat._fsync_parent
+
+        def flaky_fsync_parent(path):
+            fsync_calls["count"] += 1
+            if fsync_calls["count"] == 1:
+                raise RuntimeError("crash after alias promote")
+            return real_fsync_parent(path)
+
+        with mock.patch.object(compat, "_fsync_parent", side_effect=flaky_fsync_parent):
+            with self.assertRaises(RuntimeError):
+                compat._commit_legacy_aliases_locked(ctx, canonical, manifest, replace_existing=True)
+        self.assertTrue(alias_root.is_dir(), "new bundle promoted before the crash")
+        results = json.loads((alias_root / "course/results.json").read_text(encoding="utf-8"))
+        self.assertIn("items", results, "promoted bundle is the complete new bundle")
+
+    def test_two_concurrent_updates_serialize_without_corruption(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        jobs = [
+            ("compat_generate_replace", str(self.base), SECTION, "pub_a", self.env) for _ in range(2)
+        ]
+        results = _run_workers_compat(jobs)
+        self.assertEqual(sorted(r[0] for r in results), ["DestinationExistsError", "ok"], results)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        results_json = json.loads((alias_root / "course/results.json").read_text(encoding="utf-8"))
+        self.assertIn("items", results_json)
+        self._assert_no_alias_staging_files(ctx)
+        backup = ctx.runtime.temp_root / "compat-alias-backup" / SECTION / "pub_a"
+        self.assertFalse([f for f in backup.rglob("*") if f.is_file()], "backup cleaned after success")
 
 
 # ---------------------------------------------------------------------------
