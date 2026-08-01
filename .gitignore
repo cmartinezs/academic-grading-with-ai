@@ -1,8 +1,44 @@
-automation/ava/.ava-session/
-onboarding/work/
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python / Node generated files
 **/node_modules/
 **/__pycache__/
 **/*.pyc
+
+# Runtime-private academic data
+**/submissions/
+**/support/original-submissions/
+**/evidencia_drive/
+**/raw/private/
+evaluations/*/students.json
+evaluations/*/grades.json
+evaluations/*/*/students.json
+evaluations/*/*/assignments.json
+evaluations/*/*/form-*/results/
+
+# Target architecture runtime roots
+runtime/private/
+runtime/publications/
+runtime/state/
+
+# Generated/private outputs
+exports/publication-input/
+exports/relational-3fn/
+exports/student-results-web/
+exports/email/
+
+# AVA local state
+automation/ava/.ava-session/
 automation/ava/config.json
 automation/ava/reports/
-exports/publication-input/
+
+# Local onboarding work
+onboarding/work/
+
+# Operational logs and temporary files
+**/*.log
+**/*.lock
+**/.tmp/

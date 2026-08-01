@@ -7,13 +7,36 @@ Inventario del workspace starter. Esta estructura está pensada para comenzar de
 | Path | Purpose |
 | --- | --- |
 | `AGENTS.md` | Reglas operativas para el agente dentro del workspace. |
-| `AGENTS.es.md` | Versión en español de las reglas operativas, si el docente la prefiere. |
+| `AGENTS.es.md` | Versión en español de las reglas operativas. |
 | `README.md` | Entrada principal del workspace starter. |
 | `START_HERE.es.md` | Entrada guiada para usuarios que llegan sin contexto. |
 | `STRUCTURE_INVENTORY.md` | Este inventario. |
-| `.gitignore` | Exclusiones de archivos generados, sesiones locales y configuración privada. |
+| `ANALYSIS_FPY1101_vs_BASE.md` | Análisis histórico; contiene premisas refutadas y no se usa para planificar. |
+| `VALIDATED_ANALYSIS_FPY1101_vs_BASE.md` | Línea base validada de gaps reales. |
+| `.gitignore` | Exclusiones de secretos, PII, datos académicos privados y artefactos generados. |
 
-## `docs/`
+## `docs/architecture/`
+
+| Path | Purpose |
+| --- | --- |
+| `docs/architecture/README.md` | Índice y estado de la arquitectura objetivo. |
+| `docs/architecture/01-target-architecture.md` | Arquitectura basada en Publication Snapshots. |
+| `docs/architecture/02-data-flow.md` | Flujo de datos, builders y executors. |
+| `docs/architecture/03-canonical-vs-derived.md` | Autoridad de datos, snapshots y derivados. |
+| `docs/architecture/04-roadmap.md` | Roadmap C0–C7 y gates. |
+| `docs/architecture/05-security-and-data-boundaries.md` | Threat model, PII y límites de almacenamiento. |
+| `docs/architecture/06-supported-profile-and-extension-points.md` | Perfil soportado V1 y extensiones. |
+| `docs/architecture/07-grade-policy-contract.md` | Contrato tipado de grade policy. |
+| `docs/architecture/08-migration-strategy.md` | Migración desde las rutas y scripts actuales. |
+| `docs/architecture/09-verification-strategy.md` | Estrategia de pruebas y verificación. |
+| `docs/architecture/ADRs/README.md` | Índice y gobernanza de ADRs. |
+| `docs/architecture/ADRs/ADR-0001.md` a `ADR-0011.md` | Decisiones arquitectónicas propuestas. |
+
+La estructura `runtime/private`, `runtime/publications` y `runtime/state` corresponde al
+diseño objetivo y se incorporará mediante el roadmap. No debe asumirse implementada por
+la existencia de la documentación.
+
+## `docs/workspace/`
 
 | Path | Purpose |
 | --- | --- |
@@ -38,10 +61,10 @@ Inventario del workspace starter. Esta estructura está pensada para comenzar de
 
 | Path | Purpose |
 | --- | --- |
-| `engine/defaults.json` | Valores por defecto reutilizables. |
-| `engine/docs/export-publication.md` | Contrato del export normalizado. |
+| `engine/defaults.json` | Valores por defecto reutilizables del flujo actual. |
+| `engine/docs/export-publication.md` | Contrato vigente del export normalizado. |
 | `engine/scripts/assign_forms.py` | Aplica asignaciones de forma y roster efectivo por evaluación. |
-| `engine/scripts/export-publication-data.py` | Genera datos normalizados de publicación. |
+| `engine/scripts/export-publication-data.py` | Genera datos normalizados de publicación del flujo actual. |
 | `engine/scripts/prepare_evaluation.py` | Prepara o refresca estructura operativa de una evaluación. |
 | `engine/scripts/review-student.sh` | Utilidad base para revisar una entrega individual. |
 | `engine/scripts/students_csv_to_json.py` | Convierte CSV de roster a `students.json`. |
@@ -70,7 +93,7 @@ Inventario del workspace starter. Esta estructura está pensada para comenzar de
 | `scripts/extract-submissions.sh` | Extrae entregas desde `form-x/submissions/`. |
 | `scripts/review-batch.sh` | Revisa estructura de entregas por lote. |
 | `scripts/workspace-status.sh` | Reporta estado general del workspace sin modificar archivos. |
-| `scripts/export-results.sh` | Exporta resultados normalizados. |
+| `scripts/export-results.sh` | Exporta resultados normalizados mediante el flujo actual. |
 
 ## `automation/`
 
@@ -91,20 +114,19 @@ No se incluyen `automation/ava/config.json`, `.ava-session/`, `reports/` ni `nod
 | --- | --- |
 | `evaluations/.gitkeep` | Mantiene la carpeta vacía en el starter. |
 
-Las secciones reales se crearán después con `./scripts/init-course.sh`:
-
-```text
-evaluations/<SECTION_CODE>/
-```
+Las secciones reales se crean con `./scripts/init-course.sh`, pero roster, entregas y
+resultados reales están excluidos por defecto. El roadmap migrará estos datos a una raíz
+privada explícita.
 
 ## `exports/`
 
 | Path | Purpose |
 | --- | --- |
 | `exports/.gitkeep` | Mantiene la carpeta base de exportes. |
-| `exports/publication-input/.gitkeep` | Mantiene la carpeta donde se generarán exportes normalizados. |
+| `exports/publication-input/.gitkeep` | Mantiene la carpeta del export vigente. |
 
-Los JSON de publicación se generan después con `./scripts/export-results.sh`.
+Los outputs generados y privados están excluidos. La arquitectura objetivo reemplaza la
+ruta global por snapshots aislados mediante `sectionId/publicationId`.
 
 ## `onboarding/`
 
