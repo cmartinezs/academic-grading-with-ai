@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
+from c0.locking import FileLock
+
 STUDENT_ID_PREFIX = "stu_"
 STUDENT_ID_ENTROPY_BYTES = 16  # 128 bits
 SCHEMA_VERSION = 1
@@ -26,6 +28,10 @@ class IdentityError(Exception):
 
 class IdentityConflictError(IdentityError):
     """An external identifier is already bound to a different opaque identity."""
+
+
+class IdentityIntegrityError(IdentityError):
+    """The identity store has integrity problems; refuses to modify it."""
 
 
 def generate_student_id(existing: Optional[Iterable[str]] = None) -> str:
@@ -54,7 +60,13 @@ class StudentIdentity:
 
 
 class IdentityStore:
-    """Persistent, private mapping between external identifiers and opaque ids."""
+    """Persistent, private mapping between external identifiers and opaque ids.
+
+    Thread/process-safe: every mutation happens under a global identity lock that is
+    held while the store is reloaded, validated, modified and saved atomically.
+    """
+
+    GLOBAL_LOCK_NAME = "identity.lock"
 
     def __init__(self, identity_dir: Path):
         self.identity_dir = Path(identity_dir)
@@ -67,11 +79,25 @@ class IdentityStore:
     def path(self) -> Path:
         return self.identity_dir / "identity.json"
 
+    @property
+    def lock_path(self) -> Path:
+        return self.identity_dir.parent / "locks" / self.GLOBAL_LOCK_NAME
+
     def _load(self) -> None:
+        self.records = {}
+        self._by_external = {}
+        self.issues = []
         if not self.path.exists():
             return
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as exc:
+            self.issues.append(f"identity store corrupted: {exc}")
+            return
         raw_records = payload.get("records", [])
+        if not isinstance(raw_records, list):
+            self.issues.append("identity store malformed: records is not a list")
+            return
         seen_ids: set[str] = set()
         external_owner: dict[tuple[str, str], str] = {}
         for item in raw_records:
@@ -98,6 +124,13 @@ class IdentityStore:
             )
             self._register(identity)
 
+    def _reload_and_validate(self) -> None:
+        self._load()
+        if self.issues:
+            raise IdentityIntegrityError(
+                f"Identity store has {len(self.issues)} integrity issue(s); refusing to modify it."
+            )
+
     def integrity_issues(self) -> list[str]:
         return list(self.issues)
 
@@ -109,6 +142,10 @@ class IdentityStore:
 
     def _save(self) -> None:
         self.identity_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.identity_dir.chmod(0o700)
+        except OSError:
+            pass
         payload = {
             "schemaVersion": SCHEMA_VERSION,
             "records": [identity.to_dict() for identity in sorted(self.records.values(), key=lambda r: r.student_id)],
@@ -147,14 +184,72 @@ class IdentityStore:
     ) -> str:
         """Return the opaque id for an external identity, creating it if needed.
 
-        Idempotent and stable across executions. Detects conflicts when an external
-        identifier is bound to a different opaque id.
+        Runs under the global identity lock: the store is reloaded and validated,
+        then modified and saved atomically. Idempotent and stable across executions.
         """
+        with FileLock(self.lock_path):
+            self._reload_and_validate()
+            student_id = self._ensure_unlocked(external, display_name, contact)
+            if not dry_run:
+                self._save()
+            return student_id
+
+    def ensure_many(
+        self,
+        entries: Iterable[Mapping],
+        dry_run: bool = False,
+    ) -> list[str]:
+        """Ensure opaque ids for a batch of external identities in one atomic step.
+
+        Detects and rejects duplicates within the batch (two entries sharing an
+        external identifier) with ``IdentityConflictError``. The whole batch is
+        applied and saved under the global identity lock, so concurrent migrations
+        of different sections cannot lose identities.
+        """
+        batch = [
+            {
+                "external": {kind: str(value).strip() for kind, value in (entry.get("external") or {}).items() if str(value or "").strip()},
+                "display_name": entry.get("display_name"),
+                "contact": entry.get("contact"),
+            }
+            for entry in entries
+            if any(str(value or "").strip() for value in (entry.get("external") or {}).values())
+        ]
+        if not batch:
+            return []
+
+        with FileLock(self.lock_path):
+            self._reload_and_validate()
+            value_owners: dict[tuple[str, str], int] = {}
+            for index, entry in enumerate(batch):
+                for kind, value in entry["external"].items():
+                    key = (kind, value)
+                    previous = value_owners.get(key)
+                    if previous is not None and previous != index:
+                        raise IdentityConflictError(
+                            f"Duplicate external identifier '{kind}' within the batch; refusing to assign."
+                        )
+                    value_owners[key] = index
+
+            result: list[str] = []
+            for entry in batch:
+                sid = self._ensure_unlocked(entry["external"], entry["display_name"], entry["contact"])
+                result.append(sid)
+            if not dry_run:
+                self._save()
+            return result
+
+    def _ensure_unlocked(
+        self,
+        external: Mapping[str, str],
+        display_name: Optional[str],
+        contact: Optional[Mapping[str, str]],
+    ) -> str:
         external = {kind: str(value).strip() for kind, value in (external or {}).items() if str(value or "").strip()}
 
         bound: dict[str, str] = {}
         for kind, value in external.items():
-            student_id = self.resolve_by_external(kind, value)
+            student_id = self._by_external.get((kind, value))
             if student_id:
                 bound[student_id] = bound.get(student_id, kind)
 
@@ -168,6 +263,7 @@ class IdentityStore:
             for kind, value in external.items():
                 if kind not in identity.external_identifiers:
                     identity.external_identifiers[kind] = value
+                    self._by_external[(kind, value)] = student_id
                     changed = True
             if display_name and not identity.display_name:
                 identity.display_name = display_name
@@ -177,8 +273,6 @@ class IdentityStore:
                 if merged != identity.contact:
                     identity.contact = merged
                     changed = True
-            if changed and not dry_run:
-                self._save()
             return student_id
 
         student_id = generate_student_id(self.records.keys())
@@ -188,7 +282,5 @@ class IdentityStore:
             display_name=display_name,
             contact=dict(contact or {}),
         )
-        if not dry_run:
-            self._register(identity)
-            self._save()
+        self._register(identity)
         return student_id

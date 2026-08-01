@@ -15,6 +15,7 @@ from c0.migration import (
     STATUS_PARTIAL,
     STATUS_ROLLED_BACK,
     detect_sections,
+    sha256_file,
 )
 from c0.paths import RuntimeConfig
 
@@ -180,6 +181,72 @@ class MigrationTest(unittest.TestCase):
         self.assertTrue(manifest.exists())
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual(payload["sectionCode"], "CUR0001-001")
+
+    def test_source_drift_detected_and_reapplied(self) -> None:
+        section = build_legacy_section(self.workspace)
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        roster = json.loads((section / "students.json").read_text(encoding="utf-8"))
+        roster["students"].append({"order": 3, "rut": "33.333.333-3", "fullName": "Drifted Student"})
+        (section / "students.json").write_text(json.dumps(roster), encoding="utf-8")
+        plan = self.migrator.build_plan()
+        self.assertEqual(plan.sections[0].status, STATUS_PARTIAL)
+        report = self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        self.assertEqual(report.applied, ["CUR0001-001"])
+        plan = self.migrator.build_plan()
+        self.assertEqual(plan.sections[0].status, STATUS_MIGRATED)
+        self.assertEqual(self.identity_store.count(), 3)
+
+    def test_new_evidence_file_detected_as_drift(self) -> None:
+        section = build_legacy_section(self.workspace)
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        write(section / "support" / "declaracion.pdf", "%PDF-1.4 synthetic")
+        plan = self.migrator.build_plan()
+        self.assertEqual(plan.sections[0].status, STATUS_PARTIAL)
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        plan = self.migrator.build_plan()
+        self.assertEqual(plan.sections[0].status, STATUS_MIGRATED)
+        copied = self.private / "sections" / "CUR0001-001" / "evidence" / "support" / "declaracion.pdf"
+        self.assertTrue(copied.exists())
+
+    def test_per_evaluation_evidence_migrated(self) -> None:
+        section = build_legacy_section(self.workspace)
+        write(section / "EV1" / "support" / "rubrica.pdf", "%PDF-1.4 ev support")
+        write(section / "EV1" / "raw" / "private" / "scan.pdf", "%PDF-1.4 ev raw")
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        base = self.private / "sections" / "CUR0001-001" / "evidence"
+        self.assertTrue((base / "support" / "rubrica.pdf").exists())
+        self.assertTrue((base / "raw" / "private" / "scan.pdf").exists())
+
+    def test_missing_identity_blocks_migrated(self) -> None:
+        section = build_legacy_section(self.workspace)
+        roster = json.loads((section / "students.json").read_text(encoding="utf-8"))
+        roster["students"].append({"order": 9, "fullName": "No Identifier"})
+        (section / "students.json").write_text(json.dumps(roster), encoding="utf-8")
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        plan = self.migrator.build_plan()
+        self.assertEqual(plan.sections[0].status, STATUS_PARTIAL)
+        self.assertGreater(plan.sections[0].identity_missing, 0)
+
+    def test_chunked_hash_matches_whole_file(self) -> None:
+        large = self.tmp / "big.bin"
+        large.parent.mkdir(parents=True, exist_ok=True)
+        with large.open("wb") as handle:
+            handle.write(b"x" * (2 * 1024 * 1024 + 123))
+        import hashlib
+
+        expected = hashlib.sha256(large.read_bytes()).hexdigest()
+        self.assertEqual(sha256_file(large), expected)
+
+    def test_private_files_have_owner_only_permissions(self) -> None:
+        build_legacy_section(self.workspace)
+        self.migrator.apply(self.migrator.build_plan(dry_run=False))
+        section = self.private / "sections" / "CUR0001-001"
+        for relative in (MANIFEST_FILENAME, "roster/students.json"):
+            path = section / relative
+            mode = path.stat().st_mode & 0o777
+            self.assertLessEqual(mode, 0o600, f"{relative} permissions are {oct(mode)}")
+        ledger = self.state / "migrations" / "CUR0001-001.json"
+        self.assertLessEqual(ledger.stat().st_mode & 0o777, 0o600)
 
 
 class LockingTest(unittest.TestCase):

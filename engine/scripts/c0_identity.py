@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "engine"))
 
-from c0.identity import IdentityConflictError, IdentityStore  # noqa: E402
+from c0.identity import IdentityConflictError, IdentityIntegrityError, IdentityStore  # noqa: E402
 from c0.paths import RuntimeConfigError, resolve_runtime_roots  # noqa: E402
 from c0.util import mask_value  # noqa: E402
 
@@ -68,8 +68,8 @@ def report_status(workspace: Path, store: IdentityStore, section_code: str | Non
     return report
 
 
-def cmd_status(args: argparse.Namespace, store: IdentityStore) -> int:
-    report = report_status(ROOT, store, args.section, args.json)
+def cmd_status(args: argparse.Namespace, store: IdentityStore, workspace: Path) -> int:
+    report = report_status(workspace, store, args.section, args.json)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -100,19 +100,25 @@ def cmd_list(args: argparse.Namespace, store: IdentityStore) -> int:
     return 0
 
 
-def cmd_assign(args: argparse.Namespace, store: IdentityStore, runtime) -> int:
+def cmd_assign(args: argparse.Namespace, store: IdentityStore, runtime, workspace: Path) -> int:
     if not args.section:
         print("Error: --section is required for --assign.", file=sys.stderr)
         return 2
-    sections = section_dirs(ROOT)
+    sections = section_dirs(workspace)
     section = next((path for path in sections if path.name == args.section), None)
     if section is None:
         print(f"Error: section {args.section} not found.", file=sys.stderr)
         return 2
+    issues = store.integrity_issues()
+    if issues:
+        print("Error: identity store has integrity issues; fix them before assigning.", file=sys.stderr)
+        for issue in issues:
+            print(f"  - {issue}", file=sys.stderr)
+        return 2
     if args.apply:
         runtime.ensure_dirs()
     students = load_students(section)
-    rows = []
+    entries = []
     for student in students:
         rut = str(student.get("rut") or "").strip()
         if not rut:
@@ -120,12 +126,24 @@ def cmd_assign(args: argparse.Namespace, store: IdentityStore, runtime) -> int:
         external = {"rut": rut}
         if student.get("email"):
             external["email"] = str(student["email"])
-        sid = store.ensure(
-            external=external,
-            display_name=student.get("fullName") or student.get("names"),
-            contact={"avaUser": student.get("avaUser")} if student.get("avaUser") else None,
-            dry_run=not args.apply,
+        entries.append(
+            {
+                "external": external,
+                "display_name": student.get("fullName") or student.get("names"),
+                "contact": {"avaUser": student.get("avaUser")} if student.get("avaUser") else None,
+            }
         )
+    try:
+        student_ids = store.ensure_many(entries, dry_run=not args.apply)
+    except IdentityIntegrityError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except IdentityConflictError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    rows = []
+    for entry, sid in zip(entries, student_ids):
+        rut = entry["external"]["rut"]
         rows.append({"studentId": sid, "rut": mask_value(rut), "action": "created" if args.apply else "planned"})
     if args.json:
         print(json.dumps({"dryRun": not args.apply, "records": rows}, indent=2, ensure_ascii=False))
@@ -174,12 +192,12 @@ def main() -> int:
     store = IdentityStore(runtime.state_root / "identity")
 
     if args.assign:
-        return cmd_assign(args, store, runtime)
+        return cmd_assign(args, store, runtime, workspace)
     if args.list:
         return cmd_list(args, store)
     if args.check:
         return cmd_check(args, store)
-    return cmd_status(args, store)
+    return cmd_status(args, store, workspace)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from pathlib import Path
 from c0.identity import (
     STUDENT_ID_PREFIX,
     IdentityConflictError,
+    IdentityIntegrityError,
     IdentityStore,
     StudentIdentity,
     generate_student_id,
@@ -65,13 +66,63 @@ class IdentityTest(unittest.TestCase):
     def test_conflicting_external_identity_raises(self) -> None:
         store = IdentityStore(self.identity_dir)
         store.ensure(external={"rut": "44.444.444-4"}, display_name="One")
-        other = IdentityStore(self.identity_dir)
-        other.ensure(external={"rut": "55.555.555-5"}, display_name="Two")
-        other._save()
-        # Both records now exist in the same store; a conflicting mapping is impossible
-        # by design, so verify integrity reports no issues.
+        store.ensure(external={"email": "first@example.test"}, display_name="Two")
+        # Bringing both identifiers together resolves to two different opaque ids.
+        with self.assertRaises(IdentityConflictError):
+            store.ensure(external={"rut": "44.444.444-4", "email": "first@example.test"})
+
+    def test_ensure_merges_updates_reverse_lookup(self) -> None:
+        store = IdentityStore(self.identity_dir)
+        sid = store.ensure(external={"rut": "33.333.333-3"})
+        store.ensure(external={"rut": "33.333.333-3", "email": "person@example.test"})
+        self.assertEqual(store.resolve_by_external("email", "person@example.test"), sid)
+
+    def test_ensure_many_detects_duplicates_in_batch(self) -> None:
+        store = IdentityStore(self.identity_dir)
+        entries = [
+            {"external": {"rut": "11.111.111-1"}, "display_name": "One"},
+            {"external": {"rut": "11.111.111-1"}, "display_name": "One duplicate row"},
+        ]
+        with self.assertRaises(IdentityConflictError):
+            store.ensure_many(entries)
+
+    def test_ensure_many_is_atomic_and_stable(self) -> None:
+        store = IdentityStore(self.identity_dir)
+        entries = [
+            {"external": {"rut": "11.111.111-1"}, "display_name": "One"},
+            {"external": {"rut": "22.222.222-2"}, "display_name": "Two"},
+        ]
+        first = store.ensure_many(entries)
+        second = store.ensure_many(entries)
+        self.assertEqual(first, second)
+        self.assertEqual(store.count(), 2)
         reloaded = IdentityStore(self.identity_dir)
-        self.assertEqual(reloaded.integrity_issues(), [])
+        self.assertEqual(reloaded.count(), 2)
+        self.assertEqual(reloaded.resolve_by_external("rut", "22.222.222-2"), second[1])
+
+    def test_ensure_many_dry_run_does_not_persist(self) -> None:
+        store = IdentityStore(self.identity_dir)
+        entries = [
+            {"external": {"rut": "11.111.111-1"}, "display_name": "One"},
+            {"external": {"rut": "22.222.222-2"}, "display_name": "Two"},
+        ]
+        store.ensure_many(entries, dry_run=True)
+        reloaded = IdentityStore(self.identity_dir)
+        self.assertEqual(reloaded.count(), 0)
+
+    def test_corrupted_store_reports_issue_without_raising(self) -> None:
+        self.identity_dir.mkdir(parents=True, exist_ok=True)
+        (self.identity_dir / "identity.json").write_text("{not valid json", encoding="utf-8")
+        store = IdentityStore(self.identity_dir)
+        self.assertTrue(store.integrity_issues())
+        self.assertEqual(store.count(), 0)
+
+    def test_modification_refused_on_corrupted_store(self) -> None:
+        self.identity_dir.mkdir(parents=True, exist_ok=True)
+        (self.identity_dir / "identity.json").write_text("{not valid json", encoding="utf-8")
+        store = IdentityStore(self.identity_dir)
+        with self.assertRaises(IdentityIntegrityError):
+            store.ensure(external={"rut": "11.111.111-1"})
 
     def test_dry_run_does_not_persist(self) -> None:
         store = IdentityStore(self.identity_dir)

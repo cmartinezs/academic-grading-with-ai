@@ -12,13 +12,15 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-from c0.identity import IdentityStore
+from c0.identity import IdentityIntegrityError, IdentityStore
 from c0.locking import FileLock
 from c0.paths import RuntimeConfig
 
@@ -32,17 +34,26 @@ STATUS_PARTIAL = "partial"
 STATUS_ROLLED_BACK = "rolled_back"
 
 SUBMISSION_SOURCE_DIRS = ("submissions", "entregas")
-EVIDENCE_SOURCE_DIRS = ("support", "evidencia_drive", "raw/private")
+EVIDENCE_SOURCE_DIRS = ("support", "raw/private", "evidencia_drive")
 RESULT_GLOB = "form-*/results/*.md"
 EVALUATION_SUBDIRS = ("students.json", "assignments.json")
+HASH_BLOCK_SIZE = 1024 * 1024  # 1 MiB
 
 
 class MigrationError(Exception):
     """Base migration error."""
 
 
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def sha256_file(path: Path, block_size: int = HASH_BLOCK_SIZE) -> str:
+    """Compute a SHA-256 over the file in fixed-size blocks (memory-safe for big files)."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(block_size)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def workspace_rel(path: Path, workspace_root: Path) -> str:
@@ -158,6 +169,12 @@ def find_legacy_private_files(section_dir: Path) -> list[str]:
                     found.append(sub)
                 for result in sorted(form.glob("results/*.md")):
                     found.append(result)
+        for directory in EVIDENCE_SOURCE_DIRS:
+            candidate = ev / directory
+            if candidate.exists():
+                for path in sorted(candidate.rglob("*")):
+                    if path.is_file():
+                        found.append(path)
     for directory in EVIDENCE_SOURCE_DIRS:
         candidate = section_dir / directory
         if candidate.exists():
@@ -203,20 +220,38 @@ class Migrator:
         except (json.JSONDecodeError, OSError):
             return None
 
-    def _compute_status(self, section_code: str) -> str:
-        ledger = self._read_ledger(section_code)
+    def _compute_status(self, section_dir: Path) -> str:
+        """Status based on ledger, copied targets and source drift vs the manifest."""
+        code = section_dir.name
+        ledger = self._read_ledger(code)
         if ledger is None:
             return STATUS_PENDING
         if ledger.get("status") == STATUS_ROLLED_BACK:
             return STATUS_ROLLED_BACK
-        manifest = self._read_manifest(section_code)
+        manifest = self._read_manifest(code)
         if manifest is None:
             return STATUS_PARTIAL
-        for item in manifest.get("items", []):
+
+        manifest_items = manifest.get("items", [])
+        for item in manifest_items:
             target = self.workspace_root / item["target"]
             if not target.exists():
                 return STATUS_PARTIAL
-            if sha256_file(target) != item["targetSha256"]:
+            if sha256_file(target) != item.get("targetSha256"):
+                return STATUS_PARTIAL
+
+        items, _, _ = self._collect_items(section_dir)
+        fresh_by_source = {workspace_rel(item.source, self.workspace_root): item for item in items}
+        manifest_by_source = {item["source"]: item for item in manifest_items}
+
+        for source, manifest_item in manifest_by_source.items():
+            fresh = fresh_by_source.get(source)
+            if fresh is None:
+                continue
+            if fresh.source_sha256 != manifest_item.get("sourceSha256"):
+                return STATUS_PARTIAL
+        for source in fresh_by_source:
+            if source not in manifest_by_source:
                 return STATUS_PARTIAL
         return STATUS_MIGRATED
 
@@ -230,7 +265,7 @@ class Migrator:
             plan.sections.append(self._plan_section(section_dir))
         return plan
 
-    def _plan_section(self, section_dir: Path) -> SectionMigration:
+    def _collect_items(self, section_dir: Path) -> tuple[list[MigrationItem], int, int]:
         code = section_dir.name
         private_section = self.private_section_dir(code)
         items: list[MigrationItem] = []
@@ -306,6 +341,20 @@ class Migrator:
                                 rename_note=rename_note,
                             )
                         )
+            for directory in EVIDENCE_SOURCE_DIRS:
+                candidate = ev / directory
+                if candidate.exists():
+                    for path in sorted(candidate.rglob("*")):
+                        if path.is_file():
+                            items.append(
+                                MigrationItem(
+                                    kind="evidence",
+                                    source=path,
+                                    target=private_section / "evidence" / directory / path.relative_to(candidate),
+                                    source_sha256=sha256_file(path),
+                                    target_sha256=sha256_file(path),
+                                )
+                            )
 
         for directory in EVIDENCE_SOURCE_DIRS:
             candidate = section_dir / directory
@@ -337,7 +386,14 @@ class Migrator:
                 )
             )
 
-        status = self._compute_status(code)
+        return items, identity_count, identity_missing
+
+    def _plan_section(self, section_dir: Path) -> SectionMigration:
+        code = section_dir.name
+        items, identity_count, identity_missing = self._collect_items(section_dir)
+        status = self._compute_status(section_dir)
+        if identity_missing > 0 and status == STATUS_MIGRATED:
+            status = STATUS_PARTIAL
         section = SectionMigration(
             section_code=code,
             legacy_dir=section_dir,
@@ -350,7 +406,10 @@ class Migrator:
         if status == STATUS_PENDING:
             section.message = f"Pending migration for {code}: {len(items)} items, {identity_count} identities."
         elif status == STATUS_PARTIAL:
-            section.message = f"Partial migration detected for {code}; re-run apply to complete."
+            if identity_missing > 0:
+                section.message = f"Partial migration for {code}: {identity_missing} student(s) lack an identifier."
+            else:
+                section.message = f"Partial migration detected for {code}; re-run apply to complete."
         elif status == STATUS_ROLLED_BACK:
             section.message = f"Migration for {code} was rolled back; apply again to migrate."
         else:
@@ -365,13 +424,17 @@ class Migrator:
 
     def _apply_section(self, section: SectionMigration, report: MigrationReport) -> None:
         code = section.section_code
-        status = self._compute_status(code)
+        status = self._compute_status(section.legacy_dir)
         if status == STATUS_MIGRATED:
             report.skipped.append(code)
             report.messages.append(f"{code}: already migrated, nothing to do.")
             return
         try:
             with FileLock(self.lock_path(code)):
+                if self._compute_status(section.legacy_dir) == STATUS_MIGRATED:
+                    report.skipped.append(code)
+                    report.messages.append(f"{code}: already migrated, nothing to do.")
+                    return
                 self._do_apply(section)
             report.applied.append(code)
             report.messages.append(f"{code}: migration applied.")
@@ -381,11 +444,16 @@ class Migrator:
 
     def _do_apply(self, section: SectionMigration) -> None:
         code = section.section_code
+        if self.identity_store.integrity_issues():
+            raise IdentityIntegrityError(
+                "Identity store has integrity issues; refusing to migrate without a consistent identity store."
+            )
+        self.runtime.ensure_dirs()
         private_section = self.private_section_dir(code)
         private_section.mkdir(parents=True, exist_ok=True)
 
         students = load_students(section.legacy_dir)
-        mapping: dict[str, str] = {}
+        entries = []
         for student in students:
             rut = str(student.get("rut") or "").strip()
             if not rut:
@@ -393,18 +461,23 @@ class Migrator:
             external = {"rut": rut}
             if student.get("email"):
                 external["email"] = str(student["email"])
-            sid = self.identity_store.ensure(
-                external=external,
-                display_name=student.get("fullName") or student.get("names"),
-                contact={"avaUser": student.get("avaUser")} if student.get("avaUser") else None,
+            entries.append(
+                {
+                    "external": external,
+                    "display_name": student.get("fullName") or student.get("names"),
+                    "contact": {"avaUser": student.get("avaUser")} if student.get("avaUser") else None,
+                }
             )
-            mapping[rut] = sid
+        student_ids = self.identity_store.ensure_many(entries)
+        mapping: dict[str, str] = {
+            str(entries[index]["external"]["rut"]).strip(): student_id
+            for index, student_id in enumerate(student_ids)
+        }
 
         roster_target = private_section / "roster" / "students.json"
         if (section.legacy_dir / "students.json").exists():
-            roster_target.parent.mkdir(parents=True, exist_ok=True)
             converted = self._convert_roster(students, mapping)
-            roster_target.write_text(json.dumps(converted, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            self._write_private(roster_target, json.dumps(converted, indent=2, ensure_ascii=False) + "\n")
 
         for item in section.items:
             if item.kind == "roster" and item.target == roster_target and item.converted:
@@ -418,6 +491,7 @@ class Migrator:
                     item.rename_note = f"renamed from {item.source.name}"
             item.target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item.source, item.target)
+            os.chmod(item.target, 0o600)
             item.target_sha256 = sha256_file(item.target)
 
         manifest = {
@@ -427,12 +501,8 @@ class Migrator:
             "identityCount": section.identity_count,
             "items": [item.to_dict(self.workspace_root) for item in section.items],
         }
-        (private_section / MANIFEST_FILENAME).write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
-        (private_section / MIGRATION_NOTES_FILENAME).write_text(
-            self._notes(code), encoding="utf-8"
-        )
+        self._write_private(private_section / MANIFEST_FILENAME, json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        self._write_private(private_section / MIGRATION_NOTES_FILENAME, self._notes(code))
 
         ledger = {
             "schemaVersion": 1,
@@ -443,9 +513,23 @@ class Migrator:
             "itemCount": len(section.items),
             "manifestPath": workspace_rel(private_section / MANIFEST_FILENAME, self.workspace_root),
         }
-        ledger_path = self.ledger_path(code)
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._write_private(self.ledger_path(code), json.dumps(ledger, indent=2, ensure_ascii=False) + "\n")
+
+    def _write_private(self, path: Path, content: str) -> None:
+        """Write a sensitive file atomically with owner-only permissions."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".mig-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, path)
+        finally:
+            if os.path.exists(tmp_name):
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
 
     def _convert_roster(self, students: list[dict], mapping: dict[str, str]) -> dict:
         converted_students = []
@@ -518,5 +602,4 @@ class Migrator:
                 "rolledBackAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
         )
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._write_private(ledger_path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
