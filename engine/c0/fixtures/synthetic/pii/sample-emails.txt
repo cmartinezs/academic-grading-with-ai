@@ -1,0 +1,4 @@
+student.one@example.test
+person@example.com
+teacher.example@example.org
+real-looking@not-reserved.invalid

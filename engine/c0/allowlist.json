@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "comment": "Explicit allow-list for approved synthetic fixtures, fictional onboarding material and example templates. Every exception is specific, justified and versioned.",
+  "entries": [
+    {
+      "path": "engine/c0/fixtures/synthetic/**",
+      "rules": ["*"],
+      "reason": "Approved synthetic C0 fixtures: zero real data, reserved example domains only."
+    },
+    {
+      "path": "onboarding/**",
+      "rules": ["*"],
+      "reason": "Fictional onboarding practice material with reserved example domains."
+    },
+    {
+      "path": "automation/ava/config.example.json",
+      "rules": ["*"],
+      "reason": "Example AVA configuration with placeholder values only."
+    },
+    {
+      "path": "**/.env.example",
+      "rules": ["*"],
+      "reason": "Example environment template without real secrets."
+    },
+    {
+      "path": "engine/c0/tests/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "Synthetic tests use fictional RUT/email-shaped identifiers; secret detection stays active."
+    }
+  ]
+}
