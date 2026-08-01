@@ -6,7 +6,9 @@ específico.
 
 La arquitectura incorpora únicamente los gaps genuinos detectados al comparar el
 workspace base con `FPY1101-010V`, pero corrige las decisiones que no eran suficientemente
-seguras o generales antes de iniciar la implementación.
+seguras o generales antes de iniciar la implementación. La línea base verificada está en
+[`VALIDATED_ANALYSIS_FPY1101_vs_BASE.md`](../../VALIDATED_ANALYSIS_FPY1101_vs_BASE.md).
+El archivo `ANALYSIS_FPY1101_vs_BASE.md` se conserva solo como registro histórico.
 
 ## Estado
 
