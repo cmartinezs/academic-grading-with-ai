@@ -201,6 +201,7 @@ def generate(
     ctx,
     *,
     update_legacy_aliases: bool = False,
+    replace_legacy_aliases: bool = False,
     out_dir: Optional[Path] = None,
 ) -> list[str]:
     """Generate compatibility views from the approved snapshot for this context.
@@ -209,12 +210,14 @@ def generate(
     snapshot and the lifecycle are re-validated inside the lock, staging is
     unique per operation (``<operationId>``) and only own staging is ever
     removed. The versioned destination rejects overwrites; legacy aliases
-    require an explicit ``update_legacy_aliases`` flag.
+    reject an existing destination unless ``replace_legacy_aliases`` is set
+    (then the bundle is swapped atomically via a temporary backup).
     """
     with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
         written = _generate_locked(
             ctx,
             update_legacy_aliases=update_legacy_aliases,
+            replace_legacy_aliases=replace_legacy_aliases,
             out_dir=out_dir,
         )
     return sorted(set(written))
@@ -224,6 +227,7 @@ def _generate_locked(
     ctx,
     *,
     update_legacy_aliases: bool,
+    replace_legacy_aliases: bool,
     out_dir: Optional[Path],
 ) -> list[str]:
     dest = ctx.destination_dir()
@@ -308,7 +312,14 @@ def _generate_locked(
 
     written = [rel for rel in envelopes]
     if update_legacy_aliases:
-        written.extend(_commit_legacy_aliases(ctx, content, manifest))
+        written.extend(
+            _commit_legacy_aliases_locked(
+                ctx,
+                content,
+                manifest,
+                replace_existing=replace_legacy_aliases,
+            )
+        )
     return sorted(set(written))
 
 
@@ -327,14 +338,22 @@ def _hash_gate(staging: Path, envelopes: dict[str, dict], manifest: dict) -> Non
         raise PublicationError("Compatibility staging failed the manifest/hash gate: " + "; ".join(problems))
 
 
-def _commit_legacy_aliases(ctx, content: dict[str, dict], manifest: dict) -> list[str]:
-    """Update the legacy aliases + provenance sidecar from staged view content.
+def _commit_legacy_aliases_locked(
+    ctx,
+    content: dict[str, dict],
+    manifest: dict,
+    *,
+    replace_existing: bool,
+) -> list[str]:
+    """Atomically promote the legacy alias bundle.
 
-    Alias files carry the bare view content (no envelope wrapper) so legacy
-    consumers are unaffected; provenance lives in a sidecar ``PROVENANCE.json``.
-    Staging is unique per operation and only own staging is removed.
+    The complete bundle is built and validated in a unique staging directory
+    and promoted with a single atomic directory rename. By default an existing
+    alias destination is rejected; with ``replace_existing`` the current
+    bundle is moved to a temporary backup, the new bundle is promoted, the
+    backup is restored if the promotion fails before finalization, and the
+    backup is removed only after a successful fsync of the promoted tree.
     """
-    alias_root = legacy_alias_dir(ctx, ctx.section_id)
     operation_id = _operation_id()
     staging = _unique_staging(
         ctx.runtime.temp_root / "compat-alias-staging", ctx.section_id, ctx.publication_id, operation_id
@@ -370,17 +389,38 @@ def _commit_legacy_aliases(ctx, content: dict[str, dict], manifest: dict) -> lis
 
         _fsync_tree(staging)
 
-        alias_root.mkdir(parents=True, exist_ok=True)
-        written = []
-        for path in sorted(staging.rglob("*")):
-            if not path.is_file():
-                continue
-            rel = path.relative_to(staging).as_posix()
-            write_json(alias_root / rel, read_json(path))
-            written.append(f"legacy/{rel}")
-        return written
-    finally:
+        alias_root = legacy_alias_dir(ctx, ctx.section_id)
+        backup = ctx.runtime.temp_root / "compat-alias-backup" / ctx.section_id / ctx.publication_id / operation_id
+
+        if alias_root.exists() and not replace_existing:
+            raise DestinationExistsError(
+                f"Legacy aliases already exist for section {ctx.section_id}."
+            )
+
+        if alias_root.exists():
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            check_same_filesystem(alias_root, backup)
+            os.rename(alias_root, backup)
+            try:
+                check_same_filesystem(staging, alias_root.parent)
+                os.rename(staging, alias_root)
+                _fsync_parent(alias_root.parent)
+            except BaseException:
+                if not alias_root.exists() and backup.exists():
+                    os.rename(backup, alias_root)
+                    _fsync_parent(alias_root.parent)
+                raise
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            check_same_filesystem(staging, alias_root.parent)
+            alias_root.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(staging, alias_root)
+            _fsync_parent(alias_root.parent)
+
+        return [f"legacy/{rel}" for rel in sorted(files)]
+    except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def _view_root(ctx) -> Path:
