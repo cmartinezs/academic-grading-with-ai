@@ -92,6 +92,11 @@ Recuperación de crash post-promoción (idempotente; nunca elimina un snapshot p
 escritura y añade los eventos académicos faltantes en el ledger; volver a ejecutarlo
 no produce cambios. Los fallos de integridad se reportan sin borrar el snapshot.
 
+Con `--publication <PUB_ID>` la reconciliación se limita a un único snapshot: un
+`publicationId` inexistente es un error de estado claro y un id inválido se rechaza
+antes de escanear; ningún otro snapshot de la sección se lee ni se modifica. Sin
+el flag se reconcilia toda la sección.
+
 Discard de staging:
 
 ```bash

@@ -263,12 +263,26 @@ Cada vista declara:
 Vistas: `evaluations.json`, `grades.json` y bundle legacy `course/*` (course, students,
 evaluations, results, course-summary). Se generan únicamente desde un snapshot aprobado:
 
+- Toda la generación corre bajo el lock por `(section, publication)`: el snapshot aprobado
+  y el lifecycle se re-validan dentro del lock, el staging es único por operación
+  (`<operationId>`) y solo se elimina staging propio. El staging de otra ejecución nunca se toca.
 - La generación verifica primero el snapshot aprobado completo (inmutable) y se bloquea
   si está `revoked`/`superseded`/`corrected`.
-- Los archivos se preparan bajo staging y se promueven atómicamente al destino; un fallo
-  deja cero archivos en el destino y la sobrescritura se rechaza explícitamente.
-- Los aliases legacy (`legacy/*`) son contenido exacto sin wrapper de envelope, acompañados
-  de un sidecar `legacy/PROVENANCE.json`; requieren `--update-legacy-aliases`.
+- Los archivos se preparan bajo staging, se validan (schema + privacy + gate hash que liga
+  `canonicalSourceHash` al `contentHash` del origen), se fsync y se promueven atómicamente
+  al destino; un fallo deja cero archivos en el destino y la sobrescritura se rechaza explícitamente.
+- Los aliases legacy (`legacy/*`) son un bundle completo (contenido exacto + sidecar
+  `legacy/PROVENANCE.json`) promovido con un único rename atómico; por defecto un destino
+  existente se rechaza, y con `--replace-legacy-aliases` el bundle actual se mueve a un backup
+  temporal, el nuevo se promueve, el backup se restaura si el promote falla antes de finalizar
+  y se elimina solo tras un fsync exitoso. Requieren `--update-legacy-aliases`.
+- Los aliases respetan el contrato legacy exacto que leen los consumidores reales
+  (`sync-section-indexes.py`, `export-publication-data.py`): wrappers `{"items": [...]}` y
+  claves contractuales (`studentId` opaco, `evaluationId`, `form`, `status`, `score`, `grade`,
+  `resultPath`, `finalFeedback`, `ies`). `resultPath` es un `null` explícito (los consumidores
+  solo lo reescriben cuando es una ruta real `evaluations/EV...`), y `name`/`rut` quedan vacíos
+  por seguridad: el PII nunca se reproduce. Un validador estructural rechaza bundles que rompan
+  el wrapper o pierdan una clave contractual.
 
 ## 9. Exit codes CLI
 
@@ -294,6 +308,10 @@ evaluations, results, course-summary). Se generan únicamente desde un snapshot 
 14. Datos privados, publicaciones y estado operacional permanecen separados.
 15. No se versiona ningún snapshot real; tests solo con datos sintéticos.
 16. Un snapshot promovido nunca se elimina para simular un rollback; la reconciliación
-    (`reconcile`) restaura permisos y eventos faltantes de forma idempotente.
+    (`reconcile`) restaura permisos y eventos faltantes de forma idempotente y puede
+    restringirse a un único `publicationId`.
 17. La generación de compatibilidad verifica el snapshot aprobado antes de escribir y
     falla cerrado si el origen está revocado/superseded/corregido.
+18. Ninguna excepción del motor publica RUT, email, nombres de estudiantes ni rutas
+    absolutas (privado/state/temp/publications); los ids sensibles se referencian por
+    huella opaca y el CLI redacta como segunda línea de defensa.

@@ -2,29 +2,36 @@
 
 Corte **C1 — Publication Snapshot y lifecycle**, branch
 `feat/c1-publication-snapshot-lifecycle`. Incluye la corrección de los 55 hallazgos P0
-del review de la fase 1.
+del review de la fase 1 y la reparación residual final (serialización de compatibilidad,
+aliases legacy atómicos, contrato legacy exacto, privacidad de excepciones en el origen y
+reconciliación por publicación).
 
 ## Base
 
 - `master` actualizado a `2cf34a936f24af39d896a23e1769da3d89a3c653` (merge de C0).
 - Línea base C0 previa: 92 tests OK; scan estricto `BLOCK=0 REVIEW=0` (148 archivos);
   `c0-status.sh` con roots temporales: `PASS`.
+- Al inicio de la reparación final: C0 92 tests OK, C1 89 tests + E2E OK, scan estricto
+  186 archivos `BLOCK=0 REVIEW=0`, árbol limpio, HEAD `4455e36`.
 
 ## Resultado
 
 | Check | Resultado |
 |---|---|
-| C1 suite unittest (89 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery) | `OK` |
+| C1 suite unittest (111 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery, compat final, aliases atómicos, privacidad de excepciones, reconcile por publicación) | `OK` |
 | C1 self-check E2E sintético (build → review → approve → published → compat → supersede) | `OK` |
-| Smoke E2E (`/tmp/opencode/c1-smoke`, incl. reconciliación y aliases legacy con `PROVENANCE.json`) | `SMOKE OK` |
 | Regresión C0 (92 tests) | `OK` |
 | Scan tracked estricto (186 archivos) | `BLOCK=0 REVIEW=0` |
 | `c0-status.sh` con roots temporales | `State: PASS` |
 | Reproducibilidad (rebuild mismo epoch) | contentHash idéntico; `canonical/*` + `provenance/*` byte-idénticos |
 | Reproducibilidad (epochs distintos) | contentHash y reviewHash idénticos (claves volátiles excluidas) |
-| Concurrencia multiproceso | build vs build / approve vs approve / review vs approve / discard vs approve: sin archivos mixtos ni doble aprobación |
-| Crash + reconciliación | snapshots promovidos se restauran de forma idempotente; nunca se eliminan |
+| Review hash representativo (sintético) | `9b5d79e1dd733d4f134cff613e3a240579421f273fa97ea12806b0d1bb132152` |
+| Concurrencia multiproceso | build vs build / approve vs approve / review vs approve / discard vs approve / generate vs generate / generate vs transición terminal / alias updates: sin archivos mixtos ni doble aprobación |
+| Crash + reconciliación | snapshots promovidos se restauran de forma idempotente; nunca se eliminan; `reconcile` scoped a un `publicationId` |
+| Compatibilidad | lock-first con staging único por operación; aliases legacy promovidos atómicamente; fallo deja cero archivos en el destino |
+| Privacidad de excepciones | ningún mensaje de excepción ni stderr contiene RUT/email/rutas absolutas (incluido el CLI por subprocess) |
 | Dependencia nueva | `jsonschema==4.10.3` pinneada en `engine/publication/requirements.txt` |
+| CI remoto | `.github/workflows/c1.yml` ejecutado en el PR #4 (`gh pr checks` verde) |
 
 ## Alcance implementado
 
@@ -38,8 +45,9 @@ del review de la fase 1.
   aliases legacy con sidecar `PROVENANCE.json`).
 - CLI `engine/scripts/publication_snapshot.py` y wrapper
   `scripts/publication-snapshot.sh` (build/verify/review/approve/status/transition/
-  compatibility/reconcile/discard/test). Exit codes 0/1/2. Redacción de RUT/email en stderr.
-- Tests: `engine/publication/tests/test_c1.py` (89 tests, incluidos workers
+  compatibility/reconcile/discard/test). Exit codes 0/1/2. Redacción de RUT/email/paths
+  en stderr.
+- Tests: `engine/publication/tests/test_c1.py` (111 tests, incluidos workers
   multiproceso) + runner `engine/scripts/publication_snapshot_test.py`.
 - CI `.github/workflows/c1.yml` (tests/E2E, regresión C0, scan estricto).
 - Docs: plan, contrato, runbooks; README, STRUCTURE_INVENTORY,
@@ -85,6 +93,34 @@ del review de la fase 1.
   `--by-publication`/`--confirm approve` en transition; contrato, runbooks, ADR-0001/
   0006/0011 y este reporte actualizados.
 
+## Reparación residual final
+
+- **Serialización de compatibilidad**: `generate()` toma el lock por
+  `(section, publication)` antes de inspeccionar/re-validar y lo mantiene para toda la
+  operación; el staging es único por operación (`<operationId>`), solo se elimina staging
+  propio y cada envelope debe coincidir con el `contentHash` del origen (gate de hash)
+  antes de la promoción. Tests: dos `generate()` simultáneos (un ganador), generate vs
+  transición terminal, crash pre/post rename, fallo de privacidad con cero archivos.
+- **Aliases legacy atómicos**: el bundle completo (contenido exacto + `PROVENANCE.json`)
+  se promueve con un único rename atómico; destino existente rechazado por defecto, y con
+  reemplazo explícito el bundle actual va a un backup temporal con restauración en fallo y
+  borrado solo tras fsync exitoso. Tests de inyección de fallo: crash al escribir el
+  segundo archivo, crash pre-rename, crash post-backup-move (restaura byte-idéntico),
+  crash post-promote (bundle nuevo completo), dos updates concurrentes serializados.
+- **Contrato legacy exacto**: aliases con wrappers `{"items": [...]}` y claves
+  contractuales (`studentId` opaco, `evaluationId`, `form`, `status`, `score`, `grade`,
+  `resultPath` null explícito, `finalFeedback`, `ies`); `name`/`rut` vacíos; validador
+  estructural que rechaza wrappers rotos o claves faltantes; consumer test que lee los
+  aliases como `sync-section-indexes.py`.
+- **Privacidad de excepciones en el origen**: adapter/legacy/builder/compat no emiten
+  RUT (huella opaca SHA-256), ni paths absolutos, ni roots privados/state/temp en mensajes;
+  el CLI `_redact()` queda como segunda línea de defensa (ahora también paths absolutos).
+  Tests: `ExceptionPrivacyTest` cubre cada ruta pública y el stderr del CLI por subprocess.
+- **Reconciliación por publicación**: `reconcile(ctx, publication_id=None)` valida el id,
+  errores claros para id inexistente, rechazo de id inválido y toca solo ese snapshot.
+  Tests: sección con 3 snapshots donde solo el segundo se reconcilia; primero y tercero
+  byte-idénticos y sin eventos nuevos; id inexistente/inválido; rerun idempotente.
+
 ## Conformidad con ADRs
 
 Cumple ADR-0001 (snapshots inmutables, reconciliación sin borrado), ADR-0006
@@ -109,6 +145,13 @@ profunda de referencias); el flujo legacy sigue intacto.
 - `31627a9` fix(P0 compat): verify source, block revoked, atomic staging, alias sidecar
 - `1a7afa6` fix(P0 recovery): crash states, idempotent reconciliation, never delete
 - `d8bee56` docs(P0 cli/runbooks): reconcile CLI command, contract/runbooks/ADRs updated
+- `4455e36` docs: re-emit C1 verification report after all P0 gates pass
+- `1e95885` fix(C1 compat): lock-first serialization, unique staging, hash gate
+- `9eef81b` fix(C1 compat): atomic legacy alias bundle promotion
+- `a197ccd` fix(C1 compat): exact legacy consumer contract for aliases
+- `b8f2fbc` test(C1 compat/aliases): failure injection and concurrency coverage
+- `c26cbc8` fix(C1 privacy): sanitize exceptions at source, never leak PII or paths
+- `e11dd58` fix(C1 reconcile): scope reconciliation to a single publication
 
 ## Observaciones
 
@@ -122,4 +165,6 @@ profunda de referencias); el flujo legacy sigue intacto.
   falla cerrado si el origen está revocado/superseded/corregido; un fallo deja cero
   archivos en el destino.
 - Los snapshots promovidos nunca se eliminan para simular rollback; `reconcile` restaura
-  permisos y eventos faltantes de forma idempotente.
+  permisos y eventos faltantes de forma idempotente y admite `--publication` para acotarlo.
+- Ninguna excepción del motor publica PII ni rutas absolutas; el CLI redacta RUT/email/paths
+  como segunda línea de defensa.

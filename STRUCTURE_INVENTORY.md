@@ -78,7 +78,7 @@ la existencia de la documentación.
 | `engine/c0/tests/` | Suite de tests C0 (unittest, stdlib). |
 | `engine/publication/` | Módulo C1: schemas, adaptador legacy, manifest/hashes, builder, lifecycle, compat. |
 | `engine/publication/schemas/` | Schemas JSON Draft 2020-12 de contratos de snapshot. |
-| `engine/publication/tests/` | Suite de tests C1 (48 tests + E2E). |
+| `engine/publication/tests/` | Suite de tests C1 (111 tests + E2E). |
 | `engine/publication/requirements.txt` | Dependencia pinneada: `jsonschema==4.10.3`. |
 | `engine/templates/evaluation-base-template.md` | Plantilla fuente para generar `base.md`. |
 | `engine/templates/evaluation-case-template.md` | Plantilla fuente para generar `form-x/case.md`. |
