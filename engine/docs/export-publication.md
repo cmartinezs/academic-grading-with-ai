@@ -89,3 +89,17 @@ El workspace externo de publicación debe resolver por su cuenta:
 - frontend y build
 - despliegue
 - cualquier enriquecimiento visual adicional
+
+## Consumo por C1 (publication snapshot)
+
+El corte C1 consume esta salida como fuente legacy del adaptador:
+
+1. `./scripts/export-results.sh` regenera `exports/publication-input/`.
+2. `./scripts/publication-snapshot.sh --section <SECTION_CODE> build` lee
+   `exports/publication-input/course/*` y produce un snapshot canónico con
+   `studentId` opacos, sin PII, con hashes y provenance.
+3. `review` / `approve` publican el snapshot de forma atómica e inmutable.
+4. `compatibility --update-legacy-aliases` regenera vistas derivadas (incluidas
+   `course/*`) desde el snapshot aprobado, sin modificar `exports/`.
+
+Detalle en [docs/implementation/C1-SNAPSHOT-CONTRACT.md](../../docs/implementation/C1-SNAPSHOT-CONTRACT.md).

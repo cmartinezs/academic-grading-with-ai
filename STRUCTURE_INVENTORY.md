@@ -70,6 +70,16 @@ la existencia de la documentación.
 | `engine/scripts/students_csv_to_json.py` | Convierte CSV de roster a `students.json`. |
 | `engine/scripts/sync-section-indexes.py` | Sincroniza índices de sección y evaluación. |
 | `engine/scripts/workspace_status.py` | Diagnostica estado, archivos faltantes, variables e inconsistencias del workspace. |
+| `engine/scripts/c0_scan.py` | Scanner PII/secrets del corte C0 (BLOCK/REVIEW). |
+| `engine/scripts/c0_status.py` | Estado de raíces de datos y scanner del corte C0. |
+| `engine/scripts/publication_snapshot.py` | CLI de snapshots de publicación y lifecycle (C1). |
+| `engine/scripts/publication_snapshot_test.py` | Self-check C1: suite unittest + escenario E2E sintético. |
+| `engine/c0/` | Módulo C0: raíces de datos, identidad opaca, locking, scanner, status, allowlist. |
+| `engine/c0/tests/` | Suite de tests C0 (unittest, stdlib). |
+| `engine/publication/` | Módulo C1: schemas, adaptador legacy, manifest/hashes, builder, lifecycle, compat. |
+| `engine/publication/schemas/` | Schemas JSON Draft 2020-12 de contratos de snapshot. |
+| `engine/publication/tests/` | Suite de tests C1 (48 tests + E2E). |
+| `engine/publication/requirements.txt` | Dependencia pinneada: `jsonschema==4.10.3`. |
 | `engine/templates/evaluation-base-template.md` | Plantilla fuente para generar `base.md`. |
 | `engine/templates/evaluation-case-template.md` | Plantilla fuente para generar `form-x/case.md`. |
 | `engine/templates/evaluation-assignments-template.json` | Plantilla fuente para inicializar `assignments.json`. |
@@ -94,6 +104,10 @@ la existencia de la documentación.
 | `scripts/review-batch.sh` | Revisa estructura de entregas por lote. |
 | `scripts/workspace-status.sh` | Reporta estado general del workspace sin modificar archivos. |
 | `scripts/export-results.sh` | Exporta resultados normalizados mediante el flujo actual. |
+| `scripts/c0-test.sh` | Ejecuta la suite de tests C0. |
+| `scripts/c0-scan.sh` | Ejecuta el scanner PII/secrets C0. |
+| `scripts/c0-status.sh` | Ejecuta el chequeo de raíces de datos C0. |
+| `scripts/publication-snapshot.sh` | CLI C1 (build/verify/review/approve/status/transition/compatibility/discard) + `test`. |
 
 ## `automation/`
 
@@ -127,6 +141,22 @@ privada explícita.
 
 Los outputs generados y privados están excluidos. La arquitectura objetivo reemplaza la
 ruta global por snapshots aislados mediante `sectionId/publicationId`.
+
+## `docs/implementation/`
+
+| Path | Purpose |
+| --- | --- |
+| `docs/implementation/C1-IMPLEMENTATION-PLAN.md` | Plan de implementación del corte C1. |
+| `docs/implementation/C1-SNAPSHOT-CONTRACT.md` | Contratos exactos de snapshot, ledger, vistas y exit codes. |
+| `docs/implementation/C1-RUNBOOKS.md` | Runbooks operativos de C1. |
+| `docs/implementation/C1-VERIFICATION-REPORT.md` | Reporte de verificación final de C1. |
+
+## `.github/workflows/`
+
+| Path | Purpose |
+| --- | --- |
+| `.github/workflows/c0.yml` | Gates C0 en CI: tests, scan estricto, estado de seguridad. |
+| `.github/workflows/c1.yml` | Gates C1 en CI: tests/E2E, regresión C0, scan estricto. |
 
 ## `onboarding/`
 

@@ -88,4 +88,9 @@ pero no es suficiente por sí solo para reproducir una publicación.
   límites de almacenamiento, clasificación, identidad opaca, migración segura,
   scanner de PII/secretos, fixtures sintéticos, workspace status y runbooks.
   Detalle en [docs/implementation/C0-IMPLEMENTATION-PLAN.md](../implementation/C0-IMPLEMENTATION-PLAN.md).
-- **C1–C7** — Pendientes. No deben implementarse como parte de C0.
+- **C1** — Autorizado. Implementación en `feat/c1-publication-snapshot-lifecycle`:
+  snapshots de publicación deterministas e inmutables (manifest, hashes, provenance),
+  staging y promoción atómica, review/approval ligado al hash, ledger de lifecycle
+  append-only y vistas de compatibilidad derivadas de snapshots aprobados.
+  Detalle en [docs/implementation/C1-IMPLEMENTATION-PLAN.md](../implementation/C1-IMPLEMENTATION-PLAN.md).
+- **C2–C7** — Pendientes. No deben implementarse como parte de C1.
