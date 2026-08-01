@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/compatibility-view/1.0.0",
+  "title": "Compatibility view",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sourcePublicationId", "generatedBy", "canonicalSourceHash", "generatedAt"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "sourcePublicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "generatedBy": { "type": "string", "minLength": 1 },
+    "canonicalSourceHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "content": { "type": "object", "additionalProperties": true }
+  }
+}

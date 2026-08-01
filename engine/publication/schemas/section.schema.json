@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/section/1.0.0",
+  "title": "Canonical section",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sectionId", "course", "defaults", "assessmentIds", "schemaVersions"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "sectionId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "course": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "title"],
+      "properties": {
+        "code": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
+    "term": { "type": ["string", "null"] },
+    "defaults": { "type": "object" },
+    "assessmentIds": { "type": "array", "items": { "type": "string" } },
+    "schemaVersions": { "type": "object" }
+  }
+}

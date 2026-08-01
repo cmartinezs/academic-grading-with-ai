@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/policy/1.0.0",
+  "title": "Canonical effective policy (legacy snapshot)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policySchemaVersion",
+    "mode",
+    "calculationAuthority",
+    "effectiveDefaults",
+    "evaluationWeights",
+    "contentHash"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "policySchemaVersion": { "type": "string", "minLength": 1 },
+    "mode": { "const": "legacy-effective" },
+    "calculationAuthority": { "const": "legacy-export-adapter" },
+    "effectiveDefaults": { "type": "object" },
+    "evaluationWeights": { "type": "object" },
+    "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

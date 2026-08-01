@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/lifecycle-event/1.0.0",
+  "title": "Lifecycle ledger event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "seq", "event", "publicationId", "at"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "event": { "enum": ["created", "reviewed", "approved", "published", "superseded", "corrected", "revoked"] },
+    "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "byPublicationId": { "type": ["string", "null"], "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "receipt": { "type": ["string", "null"] },
+    "actor": { "type": ["string", "null"] },
+    "at": { "type": "string", "format": "date-time" },
+    "reason": { "type": ["string", "null"] }
+  }
+}

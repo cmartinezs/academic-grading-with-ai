@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/source-hashes/1.0.0",
+  "title": "Provenance source hashes",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sectionId", "sources"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "sectionId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref"],
+        "properties": {
+          "ref": { "type": "string", "minLength": 1 },
+          "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": ["integer", "null"], "minimum": 0 },
+          "value": { "type": ["string", "integer", "null"] }
+        }
+      }
+    }
+  }
+}
