@@ -712,7 +712,7 @@ def _writable_files(root: Path) -> list[str]:
     return writable
 
 
-def reconcile(ctx: BuildContext) -> list[str]:
+def reconcile(ctx: BuildContext, publication_id: Optional[str] = None) -> list[str]:
     """Idempotently reconcile approved snapshots with the lifecycle ledger.
 
     Handles crash states after promotion (P0 recovery, item 49-51):
@@ -724,14 +724,30 @@ def reconcile(ctx: BuildContext) -> list[str]:
     - a promoted snapshot is NEVER deleted to fake a rollback: integrity
       failures are reported, not repaired by removal.
 
-    Running reconcile twice produces no further changes (idempotent).
+    With ``publication_id`` the operation is scoped to exactly that snapshot:
+    an invalid id is rejected before any scan, a nonexistent id raises a clear
+    state error, and no other publication is ever modified. Without it the
+    whole section is reconciled. Running reconcile twice produces no further
+    changes (idempotent).
     """
-    actions: list[str] = []
     section_root = ctx.sections_root() / ctx.section_id
-    if not section_root.is_dir():
-        return actions
     ledger = ctx.ledger()
-    for dest in sorted(path for path in section_root.iterdir() if path.is_dir()):
+    actions: list[str] = []
+
+    if publication_id is not None:
+        validate_publication_id(publication_id)
+        dest = section_root / publication_id
+        if not dest.is_dir():
+            raise PublicationError(
+                f"No approved snapshot for publication {publication_id}."
+            )
+        targets = [dest]
+    else:
+        if not section_root.is_dir():
+            return actions
+        targets = sorted(path for path in section_root.iterdir() if path.is_dir())
+
+    for dest in targets:
         manifest_path = dest / "manifest.json"
         if not manifest_path.is_file():
             continue

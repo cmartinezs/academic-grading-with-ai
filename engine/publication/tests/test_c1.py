@@ -1576,5 +1576,76 @@ class ExceptionPrivacyTest(C1TestCase):
             self.assertNotIn(leak, proc.stderr, f"stderr leaks {leak!r}")
 
 
+# ---------------------------------------------------------------------------
+# Final: reconcile scoped to a single publication
+# ---------------------------------------------------------------------------
+
+
+class ReconcileFilterTest(C1TestCase):
+    def _digest(self, dest) -> dict[str, bytes]:
+        return {
+            path.relative_to(dest).as_posix(): path.read_bytes()
+            for path in sorted(dest.rglob("*"))
+            if path.is_file()
+        }
+
+    def _events_for(self, ctx, pub) -> list:
+        return [e for e in ctx.ledger().read_events() if e.get("publicationId") == pub]
+
+    def test_reconcile_single_publication_ignores_others(self):
+        ctx_a, _, _ = self.approve_flow("pub_a")
+        ctx_c, _, _ = self.approve_flow("pub_c")
+
+        ctx_b = self.prep("pub_b")
+        result = builder.build_draft(ctx_b)
+        builder.review_draft(ctx_b, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        real_append = LifecycleLedger.append
+
+        def crash_on_approved(self, event_type, publication_id, **kwargs):
+            if event_type == "approved":
+                raise RuntimeError("crash before ledger append")
+            return real_append(self, event_type, publication_id, **kwargs)
+
+        with mock.patch.object(LifecycleLedger, "append", crash_on_approved):
+            with self.assertRaises(RuntimeError):
+                builder.approve_draft(ctx_b, result.review_hash, "approver-a", "approve", content_hash=result.content_hash)
+        self.assertEqual(ctx_b.ledger().current_state("pub_b"), "reviewed")
+
+        before_a = self._digest(ctx_a.destination_dir())
+        before_c = self._digest(ctx_c.destination_dir())
+        events_before = {
+            "pub_a": self._events_for(ctx_a, "pub_a"),
+            "pub_c": self._events_for(ctx_c, "pub_c"),
+        }
+
+        actions = builder.reconcile(ctx_b, publication_id="pub_b")
+        self.assertTrue(any("ledger-reconciled:pub_b" in a for a in actions), actions)
+        self.assertFalse(any("pub_a" in a or "pub_c" in a for a in actions), actions)
+        self.assertEqual(ctx_b.ledger().current_state("pub_b"), "approved")
+        self.assertEqual(self._digest(ctx_a.destination_dir()), before_a, "first snapshot untouched")
+        self.assertEqual(self._digest(ctx_c.destination_dir()), before_c, "third snapshot untouched")
+        self.assertEqual(self._events_for(ctx_a, "pub_a"), events_before["pub_a"], "first ledger untouched")
+        self.assertEqual(self._events_for(ctx_c, "pub_c"), events_before["pub_c"], "third ledger untouched")
+
+    def test_reconcile_nonexistent_id_is_clear_error(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        with self.assertRaises(PublicationError) as cm:
+            builder.reconcile(ctx, publication_id="pub_missing")
+        self.assertIn("pub_missing", str(cm.exception))
+
+    def test_reconcile_invalid_id_rejected(self):
+        ctx = self.prep()
+        with self.assertRaises(Exception):
+            builder.reconcile(ctx, publication_id="../escape")
+
+    def test_reconcile_scoped_is_idempotent(self):
+        ctx_a, _, _ = self.approve_flow("pub_a")
+        ctx_b, _, _ = self.approve_flow("pub_b")
+        first = builder.reconcile(ctx_b, publication_id="pub_b")
+        second = builder.reconcile(ctx_b, publication_id="pub_b")
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
+
+
 if __name__ == "__main__":
     unittest.main()

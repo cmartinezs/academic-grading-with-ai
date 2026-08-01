@@ -275,7 +275,7 @@ def cmd_status(args) -> int:
 
 def cmd_reconcile(args) -> int:
     ctx = make_context(args)
-    actions = builder.reconcile(ctx)
+    actions = builder.reconcile(ctx, publication_id=args.publication)
     if not actions:
         print("Reconciliation: nothing to do (consistent).")
         return 0
