@@ -82,14 +82,41 @@ def compute_content_hash(file_hashes: dict[str, str]) -> str:
     return sha256_text(serialize({"files": canonical}))
 
 
-# provenance/engine.json carries volatile build metadata (builtAt); it is excluded
-# from the logical content hash (invariant 13) but still protected per-file by
-# manifest.files.
-CONTENT_HASH_EXCLUDED = frozenset({"provenance/engine.json"})
+# Volatile operational fields stripped before hashing canonical/source content.
+# They do not carry logical meaning: build time (provenance/engine.json builtAt,
+# legacy export generatedAt) and later approval events.
+VOLATILE_KEYS = frozenset({"generatedAt", "builtAt", "approvedAt"})
+
+
+def strip_keys(payload, volatile: frozenset[str] = VOLATILE_KEYS):
+    """Recursively remove volatile operational keys for hash normalization.
+
+    Drops matching keys at every depth so hashing is insensitive to build
+    timestamps regardless of where they appear in a document.
+    """
+    if isinstance(payload, dict):
+        return {
+            key: strip_keys(value, volatile)
+            for key, value in payload.items()
+            if key not in volatile
+        }
+    if isinstance(payload, list):
+        return [strip_keys(item, volatile) for item in payload]
+    return payload
+
+
+def normalized_sha256_bytes(content: bytes, volatile: frozenset[str] = VOLATILE_KEYS) -> str:
+    """sha256 of a JSON document with volatile keys stripped."""
+    import json as _json
+
+    return sha256_bytes(encode(strip_keys(_json.loads(content.decode("utf-8")), volatile)))
 
 
 def is_content_file(rel: str) -> bool:
-    """True for files that participate in the logical contentHash."""
-    if rel.startswith("canonical/"):
-        return True
-    return rel.startswith("provenance/") and rel not in CONTENT_HASH_EXCLUDED
+    """True for files that participate in the logical contentHash.
+
+    All canonical and provenance files are content; approvals and the manifest
+    (which records status/lifecycle metadata) are bound separately via the
+    review hash and are never part of the logical content.
+    """
+    return rel.startswith("canonical/") or rel.startswith("provenance/")

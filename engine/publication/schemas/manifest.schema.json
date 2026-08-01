@@ -10,6 +10,7 @@
     "publicationId",
     "status",
     "contentHash",
+    "reviewHash",
     "engineVersion",
     "adapterVersion",
     "policySnapshotVersion",
@@ -24,9 +25,11 @@
     "supersedesPublicationId": { "type": ["string", "null"], "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
     "correctsPublicationId": { "type": ["string", "null"], "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
     "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewHash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
     "engineVersion": { "type": "string", "minLength": 1 },
     "adapterVersion": { "type": "string", "minLength": 1 },
     "policySnapshotVersion": { "type": "string", "minLength": 1 },
+    "builtAt": { "type": "string", "format": "date-time" },
     "createdAt": { "type": "string", "format": "date-time" },
     "approvedAt": { "type": ["string", "null"], "format": "date-time" },
     "approvedBy": { "type": ["string", "null"] },
@@ -41,8 +44,8 @@
       "additionalProperties": false,
       "required": ["classification", "audience", "size", "sha256"],
       "properties": {
-        "classification": { "type": "string", "minLength": 1 },
-        "audience": { "type": "string", "minLength": 1 },
+        "classification": { "enum": ["INTERNAL", "CONFIDENTIAL", "RESTRICTED"] },
+        "audience": { "enum": ["internal", "staff", "grading"] },
         "size": { "type": "integer", "minimum": 0 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }

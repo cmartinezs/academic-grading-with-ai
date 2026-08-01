@@ -54,6 +54,10 @@ class ContentHashMismatchError(PublicationError):
     """The expected content hash does not match the computed one."""
 
 
+class ReviewHashMismatchError(PublicationError):
+    """The expected review hash does not match the computed one."""
+
+
 class NotReviewedError(PublicationError):
     """Approval requires a prior review bound to the exact content hash."""
 

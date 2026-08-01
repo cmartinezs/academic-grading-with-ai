@@ -4,11 +4,12 @@
   "title": "Publication approval",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "publicationId", "contentHash", "approvedBy", "approvedAt", "confirmation", "status"],
+  "required": ["schemaVersion", "publicationId", "contentHash", "reviewHash", "approvedBy", "approvedAt", "confirmation", "status"],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
     "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
     "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "approvedBy": { "type": "string", "minLength": 1 },
     "approvedAt": { "type": "string", "format": "date-time" },
     "confirmation": { "type": "string", "minLength": 1 },

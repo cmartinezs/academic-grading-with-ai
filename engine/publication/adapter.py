@@ -88,6 +88,12 @@ class LegacyAdapter:
         structural = {}
         if "evaluationType" in defaults:
             structural["evaluationType"] = defaults["evaluationType"]
+        course_cfg = self.legacy.course.get("course") or {}
+        term = None
+        for key in ("term", "academicPeriod", "period", "semester"):
+            if course_cfg.get(key):
+                term = str(course_cfg[key])
+                break
         return {
             "schemaVersion": SCHEMA_VERSION,
             "sectionId": self.section_id,
@@ -95,7 +101,7 @@ class LegacyAdapter:
                 "code": course_name,
                 "title": self.legacy.course_title() or course_name,
             },
-            "term": None,
+            "term": term,
             "defaults": structural,
             "assessmentIds": assessment_ids,
             "schemaVersions": {"canonical": SCHEMA_VERSION, "policy": SCHEMA_VERSION},
@@ -154,12 +160,13 @@ class LegacyAdapter:
                     "studentId": student_id,
                     "assessmentId": assessment_id,
                     "attemptId": att,
+                    "form": item.get("form"),
                     "status": item.get("status") or "Pendiente",
                     "score": item.get("score"),
                     "grade": item.get("grade"),
                     "components": list(item.get("ies") or []),
                     "feedback": item.get("finalFeedback") or None,
-                    "evidenceRefs": [f"evidence/{assessment_id}/{att}"],
+                    "evidenceRefs": [],
                 }
             )
         return {
@@ -216,12 +223,13 @@ class LegacyAdapter:
         }
 
     def build_engine_provenance(self) -> dict:
+        # Volatile build time lives in the manifest (builtAt), not here, so the
+        # engine provenance is part of the logical content hash (P0 hashes).
         return {
             "schemaVersion": SCHEMA_VERSION,
             "engineVersion": ADAPTER_VERSION,
             "adapterVersion": ADAPTER_VERSION,
             "adapter": ADAPTER_NAME,
-            "builtAt": self.clock.iso(),
         }
 
     def build_migrations_provenance(self) -> dict:

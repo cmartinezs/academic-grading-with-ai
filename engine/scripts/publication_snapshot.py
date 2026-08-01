@@ -31,6 +31,7 @@ from publication.errors import (  # noqa: E402
     MissingLegacyExportError,
     NotReviewedError,
     PublicationError,
+    ReviewHashMismatchError,
     SameFilesystemError,
     StagingExistsError,
     UnmappedStudentError,
@@ -48,6 +49,7 @@ class Parser(argparse.ArgumentParser):
 GATE_EXCEPTIONS = (
     GateError,
     ContentHashMismatchError,
+    ReviewHashMismatchError,
     UnmappedStudentError,
 )
 STATE_EXCEPTIONS = (
@@ -75,6 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_build = sub.add_parser("build", help="Build a draft snapshot in staging.")
     p_build.add_argument("--dry-run", action="store_true", help="Compute the content hash without writing anything.")
     p_build.add_argument("--legacy-source", help="Override the legacy export directory.")
+    p_build.add_argument("--supersedes-publication", help="Approved publication this snapshot supersedes.")
+    p_build.add_argument("--corrects-publication", help="Approved publication this snapshot corrects.")
 
     p_verify = sub.add_parser("verify", help="Verify a snapshot (staging or approved).")
     p_verify.add_argument(
@@ -82,13 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which snapshot to verify (default: staging).",
     )
 
-    p_review = sub.add_parser("review", help="Review a draft bound to an exact content hash.")
-    p_review.add_argument("--content-hash", required=True, help="Exact contentHash to review.")
+    p_review = sub.add_parser("review", help="Review a draft bound to an exact review hash.")
+    p_review.add_argument("--review-hash", required=True, help="Exact reviewHash to review.")
+    p_review.add_argument("--content-hash", help="Optional exact contentHash to cross-check.")
     p_review.add_argument("--reviewer", required=True, help="Audit id of the reviewer (not an email).")
     p_review.add_argument("--dry-run", action="store_true", help="Validate the review without writing.")
 
     p_approve = sub.add_parser("approve", help="Approve a reviewed draft and promote it atomically.")
-    p_approve.add_argument("--content-hash", required=True, help="Exact contentHash to approve.")
+    p_approve.add_argument("--review-hash", required=True, help="Exact reviewHash to approve.")
+    p_approve.add_argument("--content-hash", help="Optional exact contentHash to cross-check.")
     p_approve.add_argument("--approver", required=True, help="Audit id of the approver (not an email).")
     p_approve.add_argument("--confirm", choices=["approve"], help="Explicit confirmation required.")
 
@@ -126,10 +132,16 @@ def make_context(args, publication_id=None):
 
 def cmd_build(args) -> int:
     ctx = make_context(args)
-    result = builder.build_draft(ctx, dry_run=args.dry_run)
+    result = builder.build_draft(
+        ctx,
+        dry_run=args.dry_run,
+        supersedes_publication_id=args.supersedes_publication,
+        corrects_publication_id=args.corrects_publication,
+    )
     print(f"Section: {result.section_id}")
     print(f"Publication: {result.publication_id}")
     print(f"ContentHash: {result.content_hash}")
+    print(f"ReviewHash: {result.review_hash}")
     print(f"Staging: {result.staging_dir}")
     print(f"Files: {result.file_count}")
     if result.dry_run:
@@ -151,14 +163,26 @@ def cmd_verify(args) -> int:
 
 def cmd_review(args) -> int:
     ctx = make_context(args)
-    builder.review_draft(ctx, args.content_hash, args.reviewer, dry_run=args.dry_run)
-    print(f"Reviewed {ctx.publication_id} bound to {args.content_hash} by {args.reviewer}.")
+    builder.review_draft(
+        ctx,
+        args.review_hash,
+        args.reviewer,
+        content_hash=args.content_hash,
+        dry_run=args.dry_run,
+    )
+    print(f"Reviewed {ctx.publication_id} bound to {args.review_hash} by {args.reviewer}.")
     return 0
 
 
 def cmd_approve(args) -> int:
     ctx = make_context(args)
-    dest = builder.approve_draft(ctx, args.content_hash, args.approver, args.confirm or "")
+    dest = builder.approve_draft(
+        ctx,
+        args.review_hash,
+        args.approver,
+        args.confirm or "",
+        content_hash=args.content_hash,
+    )
     print(f"Approved {ctx.publication_id}.")
     print(f"Snapshot: {dest}")
     return 0
@@ -241,6 +265,23 @@ COMMANDS = {
 }
 
 
+def _redact(text: str) -> str:
+    """Mask RUT/email patterns so they never reach stderr (P0 privacy, item 29)."""
+    import re
+
+    text = re.sub(
+        r"\b(?:\d{1,2}\.\d{3}\.\d{2,3}|\d{6,8})-[\dKk]\b",
+        "[RUT]",
+        text,
+    )
+    text = re.sub(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        "[EMAIL]",
+        text,
+    )
+    return text
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -248,16 +289,16 @@ def main(argv=None) -> int:
     try:
         return handler(args)
     except GATE_EXCEPTIONS as exc:
-        print(f"Gate failed (fail-closed): {exc}", file=sys.stderr)
+        print(f"Gate failed (fail-closed): {_redact(str(exc))}", file=sys.stderr)
         if getattr(exc, "details", None):
             for detail in exc.details:
-                print(f"  - {detail}", file=sys.stderr)
+                print(f"  - {_redact(str(detail))}", file=sys.stderr)
         return 2
     except STATE_EXCEPTIONS as exc:
-        print(f"Invalid state: {exc}", file=sys.stderr)
+        print(f"Invalid state: {_redact(str(exc))}", file=sys.stderr)
         return 1
     except PublicationError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {_redact(str(exc))}", file=sys.stderr)
         return 1
 
 

@@ -17,10 +17,15 @@ from typing import Optional
 
 from . import schemas
 from .adapter import ALLOWED_STATUSES, PII_KEYS
+from .hashing import content_file_entries, expected_file_meta, review_hash
 from .jsonutil import compute_content_hash, is_content_file, read_json, sha256_file
 
 _RE_RUT = re.compile(r"\b(?:\d{1,2}\.\d{3}\.\d{2,3}|\d{6,8})-[\dKk]\b")
 _RE_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_RE_WINDOWS_ABS = re.compile(r"(?:^|[\s([\"'=:])[A-Za-z]:[\\/][A-Za-z0-9_.\\% -]*[A-Za-z0-9_.\\%]")
+_RE_UNC_ABS = re.compile(r"(?:^|[\s([\"'=:])\\\\\\[A-Za-z0-9_.\\-]+")
+_RE_FILE_URL = re.compile(r"(?i)file://[A-Za-z0-9_./\\%-]+")
+_RE_POSIX_ABS = re.compile(r"(?:^|[\s([\"'=:])/(?:[A-Za-z0-9_.~%-]+/)+[A-Za-z0-9_.~% -]*")
 
 CANONICAL_PREFIX = "canonical/"
 
@@ -71,19 +76,6 @@ def _json_payload(path: Path) -> Optional[dict]:
 
 def _contains_pii(text: str) -> bool:
     return bool(_RE_RUT.search(text) or _RE_EMAIL.search(text))
-
-
-def _string_values(payload, prefix: str = "") -> list[str]:
-    values: list[str] = []
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            values.extend(_string_values(value, f"{prefix}{key}."))
-    elif isinstance(payload, list):
-        for item in payload:
-            values.extend(_string_values(item, prefix))
-    elif isinstance(payload, str):
-        values.append(payload)
-    return values
 
 
 def _iter_keys(payload):
@@ -193,8 +185,47 @@ def gate_semantic(report: VerifyReport, root: Path, files: dict[str, Path]) -> N
         report.add("G5-semantic", f"Invalid correctsPublicationId: {corrects}")
 
 
-def gate_privacy(report: VerifyReport, root: Path, files: dict[str, Path]) -> None:
-    """G6 — no PII, no secrets, no absolute paths, no forbidden keys."""
+def _iter_abs_path_values(payload) -> list[str]:
+    """All string values that contain absolute paths or file URLs (POSIX/Windows)."""
+    values: list[str] = []
+    if isinstance(payload, dict):
+        for value in payload.values():
+            values.extend(_iter_abs_path_values(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            values.extend(_iter_abs_path_values(item))
+    elif isinstance(payload, str):
+        if (
+            _RE_POSIX_ABS.search(payload)
+            or _RE_WINDOWS_ABS.search(payload)
+            or _RE_UNC_ABS.search(payload)
+            or _RE_FILE_URL.search(payload)
+        ):
+            values.append(payload)
+    return values
+
+
+def _detect_known_names(text: str, known_names: set[str]) -> list[str]:
+    """Roster names appearing as whole words inside free text (feedback/components).
+
+    Guards against student identity leaking into reviewed content when no
+    sanitization policy exists yet (P0 privacy, items 26-27). Only names of at
+    least 4 characters are considered to avoid matching short common words.
+    """
+    if not text or not known_names:
+        return []
+    found = set()
+    for name in known_names:
+        for token in name.split():
+            if len(token) < 4:
+                continue
+            if re.search(rf"(?<![A-Za-zÁÉÍÓÚáéíóúÑñ]){re.escape(token)}(?![A-Za-zÁÉÍÓÚáéíóúÑñ])", text):
+                found.add(name)
+    return sorted(found)
+
+
+def gate_privacy(report: VerifyReport, root: Path, files: dict[str, Path], known_names: Optional[set[str]] = None) -> None:
+    """G6 — no PII, no secrets, no absolute paths, no forbidden keys, no roster names in content."""
     try:
         from c0.scanner import Scanner
 
@@ -214,22 +245,31 @@ def gate_privacy(report: VerifyReport, root: Path, files: dict[str, Path]) -> No
             findings = scanner.scan_blob(rel, content.encode("utf-8"))
             for finding in findings:
                 report.add("G6-privacy", f"{rel}: {finding.severity} {finding.rule}: {finding.message}")
-        if "\n/" in content or content.startswith("/"):
-            for value in _string_values(_json_payload(path)):
-                if isinstance(value, str) and value.startswith("/"):
-                    report.add("G6-privacy", f"Absolute path in {rel}: {value!r}")
+
+        payload = _json_payload(path)
+        if payload is not None:
+            for value in _iter_abs_path_values(payload):
+                report.add("G6-privacy", f"Absolute path or file URL in {rel}: {value!r}")
 
         if rel.startswith(CANONICAL_PREFIX):
-            payload = _json_payload(path)
             if payload is not None:
                 keys = list(_iter_keys(payload))
                 forbidden = sorted(set(keys) & PII_KEYS)
                 if forbidden:
                     report.add("G6-privacy", f"Forbidden keys in {rel}: {forbidden}")
 
+            if known_names and rel == "canonical/results.json":
+                hits = _detect_known_names(content, known_names)
+                if hits:
+                    report.add(
+                        "G6-privacy",
+                        f"{len(hits)} known roster name(s) detected in free text of {rel} "
+                        "(sanitization policy required).",
+                    )
+
 
 def gate_manifest(report: VerifyReport, root: Path, files: dict[str, Path]) -> None:
-    """G7 — declared files exist, sizes/hashes correct, contentHash reproducible."""
+    """G7 — declared files exist, sizes/hashes correct, contentHash/reviewHash reproducible."""
     manifest_path = root / "manifest.json"
     manifest = _json_payload(manifest_path)
     if manifest is None:
@@ -270,6 +310,85 @@ def gate_manifest(report: VerifyReport, root: Path, files: dict[str, Path]) -> N
     elif computed != expected:
         report.add("G7-manifest", f"contentHash mismatch: got {computed}, expected {expected}.")
 
+    core = {
+        "sectionId": manifest.get("sectionId"),
+        "publicationId": manifest.get("publicationId"),
+        "supersedesPublicationId": manifest.get("supersedesPublicationId"),
+        "correctsPublicationId": manifest.get("correctsPublicationId"),
+        "engineVersion": manifest.get("engineVersion"),
+        "adapterVersion": manifest.get("adapterVersion"),
+        "policySnapshotVersion": manifest.get("policySnapshotVersion"),
+    }
+    required_core = (
+        core["sectionId"],
+        core["publicationId"],
+        core["engineVersion"],
+        core["adapterVersion"],
+        core["policySnapshotVersion"],
+    )
+    if not all(required_core):
+        report.add("G7-manifest", "manifest is missing immutable core fields for the review hash.")
+        return
+    entries = {}
+    for rel, entry in content_file_entries(declared).items():
+        path = root / rel
+        if not path.is_file():
+            continue
+        entries[rel] = {
+            "sha256": sha256_file(path),
+            "classification": entry.get("classification"),
+            "audience": entry.get("audience"),
+        }
+    computed_review = review_hash(computed, core, entries)
+    expected_review = manifest.get("reviewHash")
+    if expected_review is None:
+        report.add("G7-manifest", "manifest.reviewHash is missing.")
+    elif computed_review != expected_review:
+        report.add(
+            "G7-manifest",
+            f"reviewHash mismatch: got {computed_review}, expected {expected_review}.",
+        )
+
+    cross_checks = [
+        (root / "approvals" / "review.json", "review"),
+        (root / "approvals" / "publication-approval.json", "publication-approval"),
+    ]
+    for path, label in cross_checks:
+        if not path.is_file():
+            continue
+        doc = _json_payload(path)
+        if doc is None:
+            report.add("G8-lifecycle", f"{label}.json is not a valid JSON object.")
+            continue
+        if doc.get("publicationId") != manifest.get("publicationId"):
+            report.add("G8-lifecycle", f"{label} references a different publicationId.")
+        if doc.get("contentHash") != manifest.get("contentHash"):
+            report.add("G8-lifecycle", f"{label}.contentHash does not match manifest.contentHash.")
+        if doc.get("reviewHash") != manifest.get("reviewHash"):
+            report.add("G8-lifecycle", f"{label}.reviewHash does not match manifest.reviewHash.")
+
+
+def gate_classification(report: VerifyReport, root: Path, files: dict[str, Path]) -> None:
+    """G9 — every declared file carries the expected classification and audience."""
+    manifest = _json_payload(root / "manifest.json")
+    if manifest is None:
+        return
+    declared = manifest.get("files", {})
+    if not isinstance(declared, dict):
+        return
+    for rel, entry in declared.items():
+        expected = expected_file_meta(rel)
+        if expected is None:
+            report.add("G9-classification", f"Unexpected file path with no classification: {rel}")
+            continue
+        expected_class, expected_audience = expected
+        if entry.get("classification") != expected_class or entry.get("audience") != expected_audience:
+            report.add(
+                "G9-classification",
+                f"{rel}: expected {expected_class}/{expected_audience}, "
+                f"got {entry.get('classification')}/{entry.get('audience')}.",
+            )
+
 
 def gate_lifecycle(report: VerifyReport, root: Path, files: dict[str, Path], immutable: bool = False) -> None:
     """G8 — status/approval consistency and immutability of approved snapshots.
@@ -304,6 +423,7 @@ GATE_RUNNERS = (
     gate_semantic,
     gate_privacy,
     gate_manifest,
+    gate_classification,
 )
 
 
@@ -312,8 +432,13 @@ def verify_snapshot(
     section_id: Optional[str] = None,
     publication_id: Optional[str] = None,
     immutable: bool = False,
+    known_names: Optional[set[str]] = None,
 ) -> VerifyReport:
-    """Verify a snapshot directory (staging draft or approved). Read-only."""
+    """Verify a snapshot directory (staging draft or approved). Read-only.
+
+    ``known_names`` supplies the legacy roster names used to detect student
+    identity leaking into free text (feedback/components).
+    """
     root = Path(root)
     report = VerifyReport(root=root)
     files = _walk_files(root)
@@ -330,6 +455,9 @@ def verify_snapshot(
             report.add("G5-semantic", f"manifest.publicationId does not match {publication_id!r}.")
 
     for runner in GATE_RUNNERS:
-        runner(report, root, files)
+        if runner is gate_privacy:
+            runner(report, root, files, known_names=known_names)
+        else:
+            runner(report, root, files)
     gate_lifecycle(report, root, files, immutable=immutable)
     return report

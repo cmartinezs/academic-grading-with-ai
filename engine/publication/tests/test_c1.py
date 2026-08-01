@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +33,7 @@ from publication.errors import (
     LegacyCourseMismatchError,
     MissingLegacyExportError,
     NotReviewedError,
+    ReviewHashMismatchError,
     SchemaError,
     StagingExistsError,
     UnmappedStudentError,
@@ -164,8 +166,8 @@ class C1TestCase(unittest.TestCase):
     def approve_flow(self, pub: str = "pub_a", section: str = SECTION, ruts=(RUT_A, RUT_B), **kwargs):
         ctx = self.prep(pub, section=section, ruts=ruts)
         result = builder.build_draft(ctx, **kwargs)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
-        dest = builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        dest = builder.approve_draft(ctx, result.review_hash, "approver-a", "approve", content_hash=result.content_hash)
         return ctx, result.content_hash, dest
 
     def approved(self, ctx, pub) -> bool:
@@ -321,6 +323,168 @@ class ManifestTest(C1TestCase):
 
 
 # ---------------------------------------------------------------------------
+# P0 hashes: artifact/content/review layers, dry-run parity, volatile-stripping
+# ---------------------------------------------------------------------------
+
+
+class HashSchemeTest(C1TestCase):
+    def test_dry_run_parity_with_build(self):
+        """Dry-run content/review hashes must match a real build (P0 item 1)."""
+        self.ensure_identity((RUT_A, RUT_B))
+        ctx = self.ctx("pub_parity")
+        dry = builder.build_draft(ctx, dry_run=True)
+        built = builder.build_draft(ctx)
+        self.assertEqual(dry.content_hash, built.content_hash)
+        self.assertEqual(dry.review_hash, built.review_hash)
+
+    def test_content_hash_strips_legacy_generated_at(self):
+        """Different legacy generatedAt values must not change contentHash (P0 item 7)."""
+        from publication.legacy import COURSE_FILE, MANIFEST_FILE
+
+        self.ensure_identity((RUT_A, RUT_B))
+
+        def build_with_generated_at(ts: str):
+            course_payload = json.loads((self.legacy / "course" / COURSE_FILE).read_text(encoding="utf-8"))
+            course_payload["generatedAt"] = ts
+            write(self.legacy / "course" / COURSE_FILE, course_payload)
+            manifest_payload = json.loads((self.legacy / MANIFEST_FILE).read_text(encoding="utf-8"))
+            manifest_payload["generatedAt"] = ts
+            write(self.legacy / MANIFEST_FILE, manifest_payload)
+            result = builder.build_draft(self.ctx(), dry_run=True)
+            return result.content_hash, result.review_hash
+
+        h1 = build_with_generated_at("2026-01-01T10:00:00")
+        h2 = build_with_generated_at("2026-06-01T22:30:00")
+        self.assertEqual(h1, h2)
+
+    def test_review_hash_covers_manifest_core_and_classification(self):
+        """Tampering engineVersion or classification must break reviewHash (P0 items 4, 8)."""
+        self.ensure_identity((RUT_A, RUT_B))
+        ctx = self.ctx()
+        result = builder.build_draft(ctx)
+        manifest = json.loads((ctx.staging_dir() / "manifest.json").read_text(encoding="utf-8"))
+        manifest["engineVersion"] = "tampered"
+        write(ctx.staging_dir() / "manifest.json", manifest)
+        report = builder.verify(ctx, "staging")
+        self.assertFalse(report.passed())
+        self.assertTrue(report.gate_findings("G7-manifest"))
+
+    def test_approval_cross_validates_manifest_review_approval(self):
+        """review.json contentHash tampering must fail verification (P0 item 8)."""
+        ctx = self.prep()
+        result = builder.build_draft(ctx)
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        review_path = ctx.staging_dir() / "approvals/review.json"
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        review["contentHash"] = "f" * 64
+        write(review_path, review)
+        report = builder.verify(ctx, "staging")
+        self.assertFalse(report.passed())
+        self.assertTrue(report.gate_findings("G8-lifecycle"))
+
+    def test_engine_provenance_has_no_built_at(self):
+        """builtAt belongs to the manifest; engine provenance is logical (P0 item 5)."""
+        ctx = self.prep()
+        builder.build_draft(ctx)
+        engine = json.loads(
+            (ctx.staging_dir() / "provenance/engine.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("builtAt", engine)
+        manifest = json.loads((ctx.staging_dir() / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("builtAt", manifest)
+        self.assertRegex(manifest["builtAt"], r"^\d{4}-\d{2}-\d{2}T")
+
+
+# ---------------------------------------------------------------------------
+# P0 privacy: absolute paths, roster names, classification
+# ---------------------------------------------------------------------------
+
+
+class PrivacyP0Test(C1TestCase):
+    def test_absolute_paths_blocked(self):
+        """POSIX, Windows and file:// absolute references must fail G6 (P0 item 25)."""
+        results = deepcopy(DEFAULT_RESULTS)
+        results[0]["finalFeedback"] = "see /etc/passwd for details"
+        self.write_legacy(results=results)
+        ctx = self.prep()
+        with self.assertRaises(GateError) as caught:
+            builder.build_draft(ctx)
+        self.assertIn("Absolute path", " ".join(caught.exception.details))
+
+    def test_windows_absolute_path_blocked(self):
+        results = deepcopy(DEFAULT_RESULTS)
+        results[0]["finalFeedback"] = "log at C:\\Users\\me\\out.txt"
+        self.write_legacy(results=results)
+        ctx = self.prep()
+        with self.assertRaises(GateError):
+            builder.build_draft(ctx)
+
+    def test_file_url_blocked(self):
+        results = deepcopy(DEFAULT_RESULTS)
+        results[0]["finalFeedback"] = "evidence at file:///mnt/data/results"
+        self.write_legacy(results=results)
+        ctx = self.prep()
+        with self.assertRaises(GateError):
+            builder.build_draft(ctx)
+
+    def test_roster_name_in_feedback_blocked(self):
+        """Known roster names in free text must fail the gate (P0 items 26-27)."""
+        results = deepcopy(DEFAULT_RESULTS)
+        results[0]["finalFeedback"] = "Buen trabajo Ana Soto"
+        self.write_legacy(results=results)
+        ctx = self.prep()
+        with self.assertRaises(GateError) as caught:
+            builder.build_draft(ctx)
+        self.assertIn("roster name", " ".join(caught.exception.details).lower())
+
+    def test_classification_mismatch_detected(self):
+        """Wrong classification/audience for a rel path must fail G9 (P0 item 31)."""
+        ctx = self.prep()
+        builder.build_draft(ctx)
+        manifest = json.loads((ctx.staging_dir() / "manifest.json").read_text(encoding="utf-8"))
+        manifest["files"]["canonical/subjects.json"]["classification"] = "INTERNAL"
+        write(ctx.staging_dir() / "manifest.json", manifest)
+        report = builder.verify(ctx, "staging")
+        self.assertFalse(report.passed())
+        self.assertTrue(report.gate_findings("G9-classification"))
+
+    def test_no_invented_evidence_refs(self):
+        """Results must not carry invented evidence references (P0 item 34)."""
+        ctx = self.prep()
+        _, canonical, _ = builder.compute_plan_payloads(ctx)
+        for result in canonical["canonical/results.json"]["results"]:
+            self.assertEqual(result["evidenceRefs"], [])
+
+    def test_form_and_term_preserved(self):
+        """Per-result form and section term must be preserved (P0 item 33)."""
+        course = json.loads((self.legacy / "course/course.json").read_text(encoding="utf-8"))
+        course["course"]["term"] = "2026-1"
+        write(self.legacy / "course/course.json", course)
+        ctx = self.prep()
+        _, canonical, _ = builder.compute_plan_payloads(ctx)
+        self.assertEqual(canonical["canonical/section.json"]["term"], "2026-1")
+        forms = {r["form"] for r in canonical["canonical/results.json"]["results"]}
+        self.assertEqual(forms, {"A", "B"})
+
+
+# ---------------------------------------------------------------------------
+# P0 hash review binding end-to-end
+# ---------------------------------------------------------------------------
+
+
+class HashBindingTest(C1TestCase):
+    def test_tampered_manifest_core_blocks_approval(self):
+        """Manifest engine-version tampering must block approval (P0 item 8)."""
+        ctx = self.prep()
+        result = builder.build_draft(ctx)
+        manifest = json.loads((ctx.staging_dir() / "manifest.json").read_text(encoding="utf-8"))
+        manifest["engineVersion"] = "tampered"
+        write(ctx.staging_dir() / "manifest.json", manifest)
+        with self.assertRaises(ReviewHashMismatchError):
+            builder.review_draft(ctx, result.review_hash, "reviewer-a")
+
+
+# ---------------------------------------------------------------------------
 # staging / promotion
 # ---------------------------------------------------------------------------
 
@@ -350,20 +514,20 @@ class StagingTest(C1TestCase):
     def test_crash_pre_rename_no_destination(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
         with mock.patch.object(builder.os, "rename", side_effect=RuntimeError("crash")):
             with self.assertRaises(RuntimeError):
-                builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+                builder.approve_draft(ctx, result.review_hash, "approver-a", "approve")
         self.assertFalse(ctx.destination_dir().exists())
         self.assertTrue(ctx.staging_dir().is_dir())
 
     def test_existing_destination_rejected(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
         ctx.destination_dir().mkdir(parents=True, exist_ok=True)
         with self.assertRaises(DestinationExistsError):
-            builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+            builder.approve_draft(ctx, result.review_hash, "approver-a", "approve")
 
     def test_dry_run_writes_nothing(self):
         ctx = self.prep()
@@ -390,43 +554,56 @@ class ReviewApproveTest(C1TestCase):
     def test_review_bound_to_hash(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
         self.assertTrue((ctx.staging_dir() / "approvals/review.json").is_file())
 
-    def test_review_wrong_hash_rejected(self):
+    def test_review_wrong_review_hash_rejected(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
         wrong = "0" * 64
-        with self.assertRaises(ContentHashMismatchError):
+        with self.assertRaises(ReviewHashMismatchError):
             builder.review_draft(ctx, wrong, "reviewer-a")
+
+    def test_review_wrong_content_hash_rejected(self):
+        ctx = self.prep()
+        result = builder.build_draft(ctx)
+        with self.assertRaises(ContentHashMismatchError):
+            builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash="f" * 64)
 
     def test_change_after_review_rejected(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
         (ctx.staging_dir() / "canonical/results.json").write_text('{"results": []}\n', encoding="utf-8")
-        with self.assertRaises(ContentHashMismatchError):
-            builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+        with self.assertRaises(ReviewHashMismatchError):
+            builder.approve_draft(ctx, result.review_hash, "approver-a", "approve")
 
     def test_approve_without_review(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
         with self.assertRaises(NotReviewedError):
-            builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+            builder.approve_draft(ctx, result.review_hash, "approver-a", "approve")
 
     def test_approval_requires_confirmation(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
         with self.assertRaises(ConfirmationRequiredError):
-            builder.approve_draft(ctx, result.content_hash, "approver-a", "")
+            builder.approve_draft(ctx, result.review_hash, "approver-a", "")
 
-    def test_approve_wrong_hash_rejected(self):
+    def test_approve_wrong_review_hash_rejected(self):
         ctx = self.prep()
         result = builder.build_draft(ctx)
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
-        with self.assertRaises(ContentHashMismatchError):
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
+        with self.assertRaises(ReviewHashMismatchError):
             builder.approve_draft(ctx, "f" * 64, "approver-a", "approve")
+
+    def test_approve_wrong_content_hash_rejected(self):
+        ctx = self.prep()
+        result = builder.build_draft(ctx)
+        builder.review_draft(ctx, result.review_hash, "reviewer-a")
+        with self.assertRaises(ContentHashMismatchError):
+            builder.approve_draft(ctx, result.review_hash, "approver-a", "approve", content_hash="f" * 64)
 
 
 # ---------------------------------------------------------------------------

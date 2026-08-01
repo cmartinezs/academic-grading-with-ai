@@ -13,11 +13,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["studentId", "assessmentId", "attemptId", "status", "components", "evidenceRefs"],
+        "required": ["studentId", "assessmentId", "attemptId", "status", "components"],
         "properties": {
           "studentId": { "type": "string", "pattern": "^stu_[A-Za-z0-9]{1,64}$" },
           "assessmentId": { "type": "string", "minLength": 1, "maxLength": 64 },
           "attemptId": { "type": "string", "pattern": "^att_[A-Za-z0-9]{1,64}$" },
+          "form": { "type": ["string", "null"] },
           "status": { "type": "string", "minLength": 1 },
           "score": { "type": ["number", "null"] },
           "grade": { "type": ["number", "null"] },

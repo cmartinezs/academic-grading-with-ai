@@ -74,8 +74,8 @@ def run_e2e() -> None:
         result = builder.build_draft(ctx)
         report = builder.verify(ctx, "staging")
         assert report.passed(), [f.message for f in report.findings]
-        builder.review_draft(ctx, result.content_hash, "reviewer-a")
-        dest = builder.approve_draft(ctx, result.content_hash, "approver-a", "approve")
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        dest = builder.approve_draft(ctx, result.review_hash, "approver-a", "approve", content_hash=result.content_hash)
         assert dest.is_dir(), "approved snapshot must exist"
         assert builder.verify(ctx, "approved").passed()
         ctx.ledger().append("published", "pub_e2e01", actor="ops", receipt="e2e-rcpt")

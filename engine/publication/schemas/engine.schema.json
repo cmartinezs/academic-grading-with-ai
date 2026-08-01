@@ -4,12 +4,11 @@
   "title": "Provenance engine",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "engineVersion", "adapterVersion", "adapter", "builtAt"],
+  "required": ["schemaVersion", "engineVersion", "adapterVersion", "adapter"],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
     "engineVersion": { "type": "string", "minLength": 1 },
     "adapterVersion": { "type": "string", "minLength": 1 },
-    "adapter": { "const": "legacy-export-adapter" },
-    "builtAt": { "type": "string", "format": "date-time" }
+    "adapter": { "const": "legacy-export-adapter" }
   }
 }

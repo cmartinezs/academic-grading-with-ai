@@ -81,6 +81,17 @@ def _sha256(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _normalized_sha256(path: Path) -> str:
+    """sha256 of the JSON document with volatile operational keys stripped.
+
+    ``generatedAt`` is written by the legacy export at build time; normalizing it
+    keeps the source hash stable across regenerations (P0 hashes, item 7).
+    """
+    from .jsonutil import normalized_sha256_bytes
+
+    return normalized_sha256_bytes(path.read_bytes())
+
+
 def _load_json(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -126,7 +137,7 @@ def load_legacy_export(
         source_hashes.append(
             {
                 "ref": f"legacy-export/{name}",
-                "sha256": _sha256(path),
+                "sha256": _normalized_sha256(path),
                 "size": path.stat().st_size,
             }
         )
@@ -135,7 +146,7 @@ def load_legacy_export(
         source_hashes.append(
             {
                 "ref": f"legacy-export/{MANIFEST_FILE}",
-                "sha256": _sha256(manifest_path),
+                "sha256": _normalized_sha256(manifest_path),
                 "size": manifest_path.stat().st_size,
             }
         )

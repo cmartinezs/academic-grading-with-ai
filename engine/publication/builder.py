@@ -31,11 +31,19 @@ from .errors import (
     ImmutableSnapshotError,
     NotReviewedError,
     PublicationError,
+    ReviewHashMismatchError,
     SameFilesystemError,
     StagingExistsError,
 )
+from .hashing import content_file_entries, content_hash_from_payloads, expected_file_meta, review_hash
 from .ids import generate_publication_id, validate_publication_id, validate_section_id
-from .jsonutil import compute_content_hash, is_content_file, read_json, sha256_file, write_json
+from .jsonutil import (
+    compute_content_hash,
+    is_content_file,
+    read_json,
+    sha256_file,
+    write_json,
+)
 from .legacy import load_legacy_export, require_course_matches
 from .lifecycle import LifecycleLedger
 from .schemas import SCHEMA_VERSION
@@ -43,9 +51,6 @@ from .verify import VerifyReport, verify_snapshot
 
 STAGING_REL = "publication-staging"
 SECTIONS_REL = "sections"
-
-FILE_CLASSIFICATION = "internal"
-FILE_AUDIENCE = "internal"
 
 
 @dataclass
@@ -239,11 +244,27 @@ def _manifest_files_entries(root: Path) -> dict[str, dict]:
         if not path.is_file() or path.name == "manifest.json":
             continue
         rel = path.relative_to(root).as_posix()
+        classification, audience = expected_file_meta(rel) or (None, None)
         entries[rel] = {
-            "classification": FILE_CLASSIFICATION,
-            "audience": FILE_AUDIENCE,
+            "classification": classification,
+            "audience": audience,
             "size": path.stat().st_size,
             "sha256": sha256_file(path),
+        }
+    return entries
+
+
+def _manifest_files_entries_dry(payloads: dict[str, dict]) -> dict[str, dict]:
+    from .jsonutil import encode, sha256_bytes
+
+    entries = {}
+    for rel, payload in sorted(payloads.items()):
+        classification, audience = expected_file_meta(rel) or (None, None)
+        entries[rel] = {
+            "classification": classification,
+            "audience": audience,
+            "size": None,
+            "sha256": sha256_bytes(encode(payload)),
         }
     return entries
 
@@ -257,6 +278,39 @@ def _content_hashes(root: Path) -> dict[str, str]:
         if is_content_file(rel):
             hashes[rel] = sha256_file(path)
     return hashes
+
+
+def _roster_names(ctx: BuildContext) -> set[str]:
+    """Legacy roster full names, used to detect identity leaking into free text."""
+    try:
+        legacy = load_legacy_export(ctx.legacy_export_dir())
+    except PublicationError:
+        return set()
+    names = set()
+    for student in legacy.students:
+        name = student.get("name") or student.get("studentName")
+        if name:
+            names.add(str(name))
+    return names
+
+
+def _manifest_core(ctx: BuildContext, supersedes: Optional[str], corrects: Optional[str]) -> dict:
+    """Immutable manifest core that a reviewer signs via the review hash."""
+    return {
+        "sectionId": ctx.section_id,
+        "publicationId": ctx.publication_id,
+        "supersedesPublicationId": supersedes,
+        "correctsPublicationId": corrects,
+        "engineVersion": ADAPTER_VERSION,
+        "adapterVersion": ADAPTER_VERSION,
+        "policySnapshotVersion": SCHEMA_VERSION,
+    }
+
+
+def _compute_review_hash(
+    content_hash: str, core: dict, files: dict[str, dict]
+) -> str:
+    return review_hash(content_hash, core, content_file_entries(files))
 
 
 def _write_manifest(root: Path, ctx: BuildContext, status: str, extra: Optional[dict] = None) -> str:
@@ -279,6 +333,7 @@ class BuildResult:
     section_id: str
     publication_id: str
     content_hash: str
+    review_hash: str
     staging_dir: Path
     file_count: int
     dry_run: bool = False
@@ -354,14 +409,18 @@ def build_draft(
 
         return sha256_bytes(encode(payload))
 
+    core = _manifest_core(ctx, supersedes_publication_id, corrects_publication_id)
     payloads = {**canonical, **provenance}
     if dry_run:
         hashes = {rel: payload_hash(payload) for rel, payload in payloads.items()}
         content_hash = compute_content_hash(hashes)
+        file_entries = content_file_entries(_manifest_files_entries_dry(payloads))
+        review_hash = _compute_review_hash(content_hash, core, file_entries)
         return BuildResult(
             section_id=ctx.section_id,
             publication_id=ctx.publication_id,
             content_hash=content_hash,
+            review_hash=review_hash,
             staging_dir=staging,
             file_count=len(payloads) + 1,
             dry_run=True,
@@ -381,9 +440,11 @@ def build_draft(
         "supersedesPublicationId": supersedes_publication_id,
         "correctsPublicationId": corrects_publication_id,
         "contentHash": content_hash,
+        "reviewHash": None,
         "engineVersion": ADAPTER_VERSION,
         "adapterVersion": ADAPTER_VERSION,
         "policySnapshotVersion": SCHEMA_VERSION,
+        "builtAt": ctx.clock.iso(),
         "createdAt": ctx.clock.iso(),
         "approvedAt": None,
         "approvedBy": None,
@@ -391,8 +452,14 @@ def build_draft(
     }
     write_json(staging / "manifest.json", manifest)
     _write_manifest(staging, ctx, "draft")
+    manifest_on_disk = read_json(staging / "manifest.json")
+    review_hash = _compute_review_hash(
+        content_hash, core, manifest_on_disk["files"]
+    )
+    manifest_on_disk["reviewHash"] = review_hash
+    write_json(staging / "manifest.json", manifest_on_disk)
 
-    report = verify_snapshot(staging, ctx.section_id, ctx.publication_id)
+    report = verify_snapshot(staging, ctx.section_id, ctx.publication_id, known_names=_roster_names(ctx))
     if not report.passed():
         raise GateError("build-verify", [f.message for f in report.findings])
 
@@ -402,6 +469,7 @@ def build_draft(
         section_id=ctx.section_id,
         publication_id=ctx.publication_id,
         content_hash=content_hash,
+        review_hash=review_hash,
         staging_dir=staging,
         file_count=len(payloads) + 1,
         dry_run=False,
@@ -431,24 +499,36 @@ def verify(ctx: BuildContext, target: str = "staging") -> VerifyReport:
 # ---------------------------------------------------------------------------
 
 
-def review_draft(ctx: BuildContext, content_hash: str, reviewer: str, dry_run: bool = False) -> str:
-    """Write a review bound to the exact content hash. Never promotes."""
+def review_draft(
+    ctx: BuildContext,
+    review_hash_value: str,
+    reviewer: str,
+    content_hash: Optional[str] = None,
+    dry_run: bool = False,
+) -> str:
+    """Write a review bound to the exact review hash. Never promotes."""
     if not reviewer or "@" in reviewer:
         raise PublicationError("reviewer must be a non-email audit id.")
     staging = ctx.staging_dir()
     if not staging.is_dir():
         raise PublicationError(f"Staging does not exist: {staging}")
-    current = compute_content_hash(_content_hashes(staging))
-    if current != content_hash:
+    current_content, current_review = _current_hashes(staging, ctx)
+    if content_hash is not None and current_content != content_hash:
         raise ContentHashMismatchError(
-            f"Expected contentHash {content_hash} does not match current {current}; "
+            f"Expected contentHash {content_hash} does not match current {current_content}; "
             "review rejected (content changed)."
+        )
+    if current_review != review_hash_value:
+        raise ReviewHashMismatchError(
+            f"Expected reviewHash {review_hash_value} does not match current {current_review}; "
+            "review rejected (manifest core or file classification changed)."
         )
 
     review = {
         "schemaVersion": SCHEMA_VERSION,
         "publicationId": ctx.publication_id,
-        "contentHash": content_hash,
+        "contentHash": current_content,
+        "reviewHash": review_hash_value,
         "reviewedBy": reviewer,
         "reviewedAt": ctx.clock.iso(),
         "status": "reviewed",
@@ -456,11 +536,32 @@ def review_draft(ctx: BuildContext, content_hash: str, reviewer: str, dry_run: b
     if not dry_run:
         write_json(staging / "approvals" / "review.json", review)
         _write_manifest(staging, ctx, "reviewed")
-        report = verify_snapshot(staging, ctx.section_id, ctx.publication_id)
+        report = verify_snapshot(staging, ctx.section_id, ctx.publication_id, known_names=_roster_names(ctx))
         if not report.passed():
             raise GateError("review-verify", [f.message for f in report.findings])
         ctx.ledger().append("reviewed", ctx.publication_id, actor=reviewer)
-    return content_hash
+    return review_hash_value
+
+
+def _current_hashes(staging: Path, ctx: BuildContext) -> tuple[str, str]:
+    """Content and review hash of the current staging state.
+
+    The review hash is derived from the *declared* manifest core so that
+    tampering with engineVersion/adapterVersion/lineage is detected.
+    """
+    content_hash = compute_content_hash(_content_hashes(staging))
+    manifest = read_json(staging / "manifest.json")
+    core = {
+        "sectionId": manifest.get("sectionId"),
+        "publicationId": manifest.get("publicationId"),
+        "supersedesPublicationId": manifest.get("supersedesPublicationId"),
+        "correctsPublicationId": manifest.get("correctsPublicationId"),
+        "engineVersion": manifest.get("engineVersion"),
+        "adapterVersion": manifest.get("adapterVersion"),
+        "policySnapshotVersion": manifest.get("policySnapshotVersion"),
+    }
+    review = _compute_review_hash(content_hash, core, manifest["files"])
+    return content_hash, review
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +569,14 @@ def review_draft(ctx: BuildContext, content_hash: str, reviewer: str, dry_run: b
 # ---------------------------------------------------------------------------
 
 
-def approve_draft(ctx: BuildContext, content_hash: str, approver: str, confirmation: str) -> Path:
-    """Approve an exact-hash reviewed draft, finalize the manifest and promote atomically."""
+def approve_draft(
+    ctx: BuildContext,
+    review_hash_value: str,
+    approver: str,
+    confirmation: str,
+    content_hash: Optional[str] = None,
+) -> Path:
+    """Approve an exact-review-hash reviewed draft, finalize the manifest and promote atomically."""
     if not approver or "@" in approver:
         raise PublicationError("approver must be a non-email audit id.")
     if confirmation != "approve":
@@ -479,23 +586,32 @@ def approve_draft(ctx: BuildContext, content_hash: str, approver: str, confirmat
     if not staging.is_dir():
         raise PublicationError(f"Staging does not exist: {staging}")
 
-    current = compute_content_hash(_content_hashes(staging))
-    if current != content_hash:
+    current_content, current_review = _current_hashes(staging, ctx)
+    if content_hash is not None and current_content != content_hash:
         raise ContentHashMismatchError(
-            f"Expected contentHash {content_hash} does not match current {current}; approval rejected."
+            f"Expected contentHash {content_hash} does not match current {current_content}; approval rejected."
+        )
+    if current_review != review_hash_value:
+        raise ReviewHashMismatchError(
+            f"Expected reviewHash {review_hash_value} does not match current {current_review}; approval rejected."
         )
 
     review_path = staging / "approvals" / "review.json"
     if not review_path.is_file():
-        raise NotReviewedError("Approval requires a prior review bound to the exact content hash.")
+        raise NotReviewedError("Approval requires a prior review bound to the exact review hash.")
     review = read_json(review_path)
-    if review.get("contentHash") != content_hash:
+    if review.get("reviewHash") != review_hash_value:
+        raise NotReviewedError("Review is not bound to the current review hash; re-review required.")
+    if review.get("contentHash") != current_content:
         raise NotReviewedError("Review is not bound to the current content hash; re-review required.")
+    if review.get("publicationId") != ctx.publication_id:
+        raise NotReviewedError("Review references a different publication; re-review required.")
 
     approval = {
         "schemaVersion": SCHEMA_VERSION,
         "publicationId": ctx.publication_id,
-        "contentHash": content_hash,
+        "contentHash": current_content,
+        "reviewHash": review_hash_value,
         "approvedBy": approver,
         "approvedAt": ctx.clock.iso(),
         "confirmation": confirmation,
@@ -509,7 +625,7 @@ def approve_draft(ctx: BuildContext, content_hash: str, approver: str, confirmat
         {"approvedAt": approval["approvedAt"], "approvedBy": approver},
     )
 
-    report = verify_snapshot(staging, ctx.section_id, ctx.publication_id)
+    report = verify_snapshot(staging, ctx.section_id, ctx.publication_id, known_names=_roster_names(ctx))
     if not report.passed():
         raise GateError("approve-verify", [f.message for f in report.findings])
 
