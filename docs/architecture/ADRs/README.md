@@ -2,9 +2,10 @@
 
 ## Estado
 
-Todos los ADRs permanecen en estado **Propuesto** hasta revisión humana. La aprobación de
-la arquitectura requiere resolverlos antes de iniciar C1; ADR-0007 y ADR-0008 deben estar
-aprobados antes de completar C0.
+Los ADRs ADR-0001 a ADR-0011 fueron **aprobados** por el propietario del repositorio el
+2026-08-01. Con ello, el corte **C0** (Threat model, PII, identidad y límites de
+almacenamiento) queda **autorizado para implementación**. Los cortes C1–C7 permanecen
+**pendientes** hasta completar las condiciones de inicio definidas en el roadmap.
 
 | ADR | Decisión |
 |---|---|
