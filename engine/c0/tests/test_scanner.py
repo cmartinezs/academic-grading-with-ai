@@ -157,18 +157,24 @@ class ScannerTest(unittest.TestCase):
         findings = scanner.scan_file(".env.example", path)
         self.assertFalse(any(f.rule == "env-file" for f in findings))
 
-    def test_binary_content_skipped(self) -> None:
+    def test_binary_content_emits_review(self) -> None:
         content = ("plain\n" + password_line()) * 200
         content = content + "\x00" + content
         findings = self.scan_content(content)
         self.assertFalse(any(f.rule == "secret-assignment" for f in findings))
+        self.assertTrue(
+            any(f.rule == "uninspected-binary" and f.severity == SEVERITY_REVIEW for f in findings)
+        )
 
-    def test_large_content_skipped(self) -> None:
+    def test_large_content_emits_review(self) -> None:
         secret_line = password_line()
         content = secret_line * 120000  # well above the 2 MiB content limit
         self.assertGreater(len(content.encode("utf-8")), 2 * 1024 * 1024)
         findings = self.scan_content(content)
         self.assertFalse(any(f.rule == "secret-assignment" for f in findings))
+        self.assertTrue(
+            any(f.rule == "uninspected-large" and f.severity == SEVERITY_REVIEW for f in findings)
+        )
 
     def test_high_confidence_rule_not_allowlistable(self) -> None:
         allowlist = [{"path": "**/.env", "rules": ["env-file", "secret-assignment"]}]

@@ -34,7 +34,9 @@ Suites: `test_paths` 20, `test_status` 8, `test_identity` 17, `test_migration` 1
 - **Scanner (P0-1..9)**: staged blobs read from Git index (`git show :<path>`); emails
   BLOCK outside reserved domains; explicit per-rule allow-list rejects wildcard `*` and
   high-confidence rules; content size (2 MiB) and binary sniff guards; RUT/email paths and
-  values masked (`c0/util.py`); private-artifact path rules enforced.
+  values masked (`c0/util.py`); private-artifact path rules enforced. Content skipped for
+  size/binary reasons now emits a `REVIEW` finding (`uninspected-large`, `uninspected-binary`)
+  so "no findings" never implies "fully inspected".
 - **Identity/concurrency (P0-10..18)**: global `identity.lock`; batch `ensure_many` atomic;
   reverse index updated on merge; in-batch duplicate detection; corrupted store →
   `IdentityIntegrityError`; concurrency tests 4 workers × 20 entries.
@@ -58,5 +60,12 @@ Suites: `test_paths` 20, `test_status` 8, `test_identity` 17, `test_migration` 1
 - `daa0031` data roots/permissions
 - `a6bbef6` scanner allow-list, staged blobs, masking
 - `9fd448c` docs + CI gate
+
+## Non-blocking backlog
+
+- **Stale locks after abrupt termination** (documented debt, not a merge blocker):
+  `FileLock` uses a timeout but has no TTL/owner recovery for lock files left behind by a
+  killed process. Remediation is manual for now (see runbook §5) and hardening is deferred
+  to the runtime/state effort.
 
 Working tree clean; branch synced with `origin/feat/c0-security-data-boundaries`.

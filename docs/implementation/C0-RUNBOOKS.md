@@ -100,6 +100,16 @@ recreate it manually; run the assignment flow:
 `c0-status` fails on integrity issues (`identity` check = FAIL) rather than silently
 reassigning. Re-run `./scripts/c0-test.sh` after any manual fix.
 
+**Operational debt (stale locks):** identity/migration writes hold a `FileLock` with a
+timeout; a process killed abruptly can leave a lock file behind (no TTL/owner recovery yet).
+`c0-status` reports the lock region as a WARN/FAIL when it cannot acquire it. Until
+owner-detection recovery is added, remove a stale lock only while no other writer is running:
+
+```sh
+rm -f "$ACADGRAD_STATE_ROOT/locks/identity.lock"
+rm -f "$ACADGRAD_STATE_ROOT/locks/migrate-<SECTION>.lock"
+```
+
 ## 6. Runtime root configuration
 
 Defaults: `$XDG_DATA_HOME/academic-grading-with-ai/{private,state,publications,tmp}`.
