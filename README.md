@@ -4,6 +4,11 @@ Workspace base para corrección académica asistida por agente. No incluye curso
 
 Si llegaste sin contexto, empieza por [Empieza Aquí](START_HERE.es.md).
 
+> **Datos reales:** roster, RUT, emails, entregas, feedback, notas y exports privados no
+> deben versionarse. Mientras el corte C0 de la arquitectura no esté implementado, verifica
+> manualmente el estado de Git antes de cada commit y mantén los datos reales en un entorno
+> privado. Consulta [Seguridad y límites de datos](docs/architecture/05-security-and-data-boundaries.md).
+
 ## Inicio rápido
 
 Desde la raíz del workspace:
@@ -18,7 +23,7 @@ Después de crear una evaluación:
 
 1. El docente provee `statement.md` y `rubric.md` para cada forma.
 2. El agente actualiza `base.md`, cada `case.md` y `plan.md`.
-3. El docente deja las entregas descargadas en `evaluations/<SECTION_CODE>/<EV>/form-x/submissions/`.
+3. El docente deja temporalmente las entregas descargadas en `evaluations/<SECTION_CODE>/<EV>/form-x/submissions/`, sin versionarlas.
 4. El agente extrae, revisa, ejecuta una marcha blanca y luego corrige por bloques.
 5. El agente exporta resultados con `./scripts/export-results.sh`.
 
@@ -54,6 +59,8 @@ Después de crear una evaluación:
 
 ## Documentación
 
+- [Arquitectura objetivo](docs/architecture/README.md)
+- [Análisis validado FPY1101 vs base](VALIDATED_ANALYSIS_FPY1101_vs_BASE.md)
 - [Workspace docs](docs/workspace/README.md)
 - [Empieza aquí](START_HERE.es.md)
 - [Operating rules](AGENTS.md)
