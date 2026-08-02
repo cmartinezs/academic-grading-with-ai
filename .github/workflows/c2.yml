@@ -1,0 +1,29 @@
+name: C2 grade policy engine gates
+
+on:
+  push:
+    branches: [master, feat/c2-grade-policy-engine]
+  pull_request:
+
+jobs:
+  c2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install C2 pinned dependency
+        run: |
+          python3 -m pip install --user -r engine/grade_policy/requirements.txt
+          python3 -c "import jsonschema; print('jsonschema', jsonschema.__version__)"
+
+      - name: C2 conformance, property, integration, failure-injection and E2E suite
+        run: ./scripts/grade-policy.sh test
+
+      - name: C1 regression suite
+        run: ./scripts/publication-snapshot.sh test
+
+      - name: C0 regression suite
+        run: ./scripts/c0-test.sh
+
+      - name: Tracked scan (strict)
+        run: ./scripts/c0-scan.sh --tracked --strict
