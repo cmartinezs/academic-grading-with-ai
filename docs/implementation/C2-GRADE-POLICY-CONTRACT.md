@@ -398,6 +398,33 @@ matriz se rechaza en validación semántica (no por JSON Schema).
   `1.1.0`) se añaden a `manifest.files`, `contentHash` y `reviewHash`.
 - Un fallo de policy no deja staging parcial.
 
+### Frontera de autoridad con `canonical/results.json`
+
+El modo snapshot es la frontera de autoridad entre `canonical/results.json` y el
+engine de policy, y es **fail-closed** (los payloads canonical de C1 no llevan
+unidad, por lo que el engine nunca adivina):
+
+- **Unidades explícitas**: todo assessment que la policy usa debe declarar su
+  unidad en `assessmentUnits`. Un assessment sin unidad declarada es rechazado
+  (`SemanticValidationError`) — nunca cae silenciosamente a `percent`. El modo
+  standalone (CLI con inputs tipados) sí puede resolver unidades desde los
+  inputs; el modo snapshot no.
+- **Selección de attempts fuera de C2 V1**: más de un resultado para el mismo
+  `(studentId, assessmentId)` es rechazado con `DuplicateAttemptError` (tipado y
+  sanitizado). El orden del array nunca es política de selección; no existe
+  "último", "primero" ni "mejor" implícito. Seleccionar entre intentos
+  múltiples requerirá una policy explícita futura.
+- **Score inválido**: `null`/vacío es `missing` (gestionado por la missing policy
+  del stage); un número válido se convierte con `Decimal(str(value))`; un valor
+  no vacío que no parsea, o `NaN`/`Infinity`, es un error tipado
+  (`InvalidScoreError`) — los errores de datos **nunca** se convierten en missing
+  policy. El mensaje no incluye el valor crudo ni PII (no name/RUT/email/path).
+- **Precondición estructural**: `build_c2_payloads` valida la estructura C1 de
+  `subjects.json`, `assessments.json` y `results.json` (`schemaVersion`,
+  `sectionId`, `studentId` opaco `stu_…`, `attemptId` opaco `att_…`, `status`,
+  `components`, `score`). Una estructura incompleta es `CanonicalFormatError` —
+  el snapshot no se calcula sobre estructuras incompletas.
+
 ## 13. Ejemplos inválidos (rechazados por validación)
 
 - Operador desconocido: `{"operator": "magicAverage"}`.
@@ -423,6 +450,11 @@ matriz se rechaza en validación semántica (no por JSON Schema).
 - `assessmentId` duplicado o referencia inexistente.
 - Campos desconocidos (schema `additionalProperties: false`).
 - `engineMinVersion` mayor que la versión del engine instalado.
+- En modo snapshot (§12): assessment usado por la policy sin unidad en
+  `assessmentUnits`; más de un resultado para el mismo `(studentId,
+  assessmentId)`; score no vacío no finito (`NaN`/`Infinity`) o no parseable;
+  resultados/assessments/subjects con estructura C1 incompleta (sin
+  `attemptId`, `components`, ids opacos, etc.).
 
 ## 14. Exit codes CLI
 

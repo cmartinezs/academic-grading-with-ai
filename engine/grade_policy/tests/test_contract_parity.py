@@ -96,6 +96,43 @@ def inputs_for(**values) -> NormalizedInputs:
     return NormalizedInputs(subject_id="S", assessments=assessments)
 
 
+def canonical_for(rows, *, student_ids=("stu_a1b2c3",)) -> dict:
+    """A canonical snapshot shaped like the real C1 payloads.
+
+    Every result carries the C1 required fields (opaque studentId/attemptId,
+    status, components and score) so ``build_c2_payloads`` is never exercised
+    against incomplete structures.
+    """
+    return {
+        "canonical/assessments.json": {
+            "schemaVersion": "1.0.0",
+            "sectionId": "SEC",
+            "assessments": [{"assessmentId": aid} for aid in ("EV1", "EV2", "EV3", "EV4", "PCT", "EvG")],
+        },
+        "canonical/subjects.json": {
+            "schemaVersion": "1.0.0",
+            "sectionId": "SEC",
+            "subjects": [{"studentId": sid} for sid in student_ids],
+        },
+        "canonical/results.json": {
+            "schemaVersion": "1.0.0",
+            "sectionId": "SEC",
+            "results": rows,
+        },
+    }
+
+
+def result_row(sid: str, aid: str, score, *, status: str = "Evaluada", attempt: int = 1) -> dict:
+    return {
+        "studentId": sid,
+        "assessmentId": aid,
+        "attemptId": f"att_a1b2c3d4e5f6{aid.lower()}{attempt:02d}"[:22],
+        "status": status,
+        "score": score,
+        "components": [],
+    }
+
+
 class OfficialExampleTest(unittest.TestCase):
     def test_official_section2_loads_literally(self) -> None:
         """The literal §2 document (copied from the contract file) validates
@@ -136,25 +173,21 @@ class OfficialExampleTest(unittest.TestCase):
         self.assertEqual(out.value.unit, "grade")
 
     def test_official_section2_generates_c2_snapshot(self) -> None:
-        """The literal §2 document produces the three C2 snapshot payloads."""
+        """The literal §2 document produces the three C2 snapshot payloads from
+        C1-schema-valid canonical payloads (opaque ids, attemptId, status,
+        components, score)."""
         from grade_policy.snapshot import build_c2_payloads
 
         doc = section2_example()
-        canonical = {
-            "canonical/assessments.json": {
-                "assessments": [{"assessmentId": aid} for aid in ("EV1", "EV2", "EV3", "EV4", "PCT", "EvG")]
-            },
-            "canonical/subjects.json": {"subjects": [{"studentId": "S"}]},
-            "canonical/results.json": {
-                "results": [
-                    {"studentId": "S", "assessmentId": aid, "score": score, "status": "Evaluada"}
-                    for aid, score in {
-                        "EV1": "78.4", "EV2": "85", "EV3": "60",
-                        "EV4": "90", "PCT": "70", "EvG": "5",
-                    }.items()
-                ]
-            },
-        }
+        canonical = canonical_for(
+            [
+                result_row("stu_a1b2c3", aid, score)
+                for aid, score in {
+                    "EV1": "78.4", "EV2": "85", "EV3": "60",
+                    "EV4": "90", "PCT": "70", "EvG": "5",
+                }.items()
+            ]
+        )
         payloads = build_c2_payloads("SEC", canonical, doc)
         self.assertEqual(
             set(payloads),

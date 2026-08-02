@@ -178,6 +178,23 @@ RH=<reviewHash-impreso-por-build>
 Un snapshot legacy (sin `--grade-policy`) es byte-compatible con C1 y sigue
 verificándose sin cambios.
 
+### Frontera de autoridad con el canonical (fail-closed)
+
+El modo snapshot exige, antes de calcular:
+
+- **Unidades explícitas**: todo assessment que la policy usa debe declarar su
+  unidad en `assessmentUnits` (el canonical de C1 no lleva unidad). Falta de
+  unidad → `SemanticValidationError`; nunca se cae silenciosamente a `percent`.
+- **Un intento por (studentId, assessmentId)**: un resultado duplicado →
+  `DuplicateAttemptError`. C2 V1 no selecciona intentos (no "último"/"primero"/
+  "mejor"); la selección múltiple requerirá una policy explícita futura.
+- **Score válido**: `null`/vacío es `missing`; un score no parseable o no finito
+  (`NaN`/`Infinity`) → `InvalidScoreError` (nunca se convierte en missing
+  policy).
+- **Estructura C1**: `subjects.json`/`assessments.json`/`results.json` con
+  `schemaVersion`, `sectionId`, ids opacos (`stu_…`/`att_…`), `status`,
+  `components` y `score`. Estructura incompleta → `CanonicalFormatError`.
+
 ## Verificación
 
 ```bash
@@ -201,6 +218,10 @@ verificándose sin cambios.
 | Pesos no suman 1 | exit `2`, `WeightSumError` | corregir policy |
 | Assessment faltante (missingPolicy `fail`) | exit `2`, `MissingInputError` | inputs o missingPolicy |
 | Assessment de policy ausente del canonical | build falla sin staging parcial | corregir policy o export |
+| Assessment de policy sin `assessmentUnits` en snapshot | exit `2`, `SemanticValidationError` | declarar la unidad en la policy |
+| Resultado duplicado (studentId, assessmentId) | exit `2`, `DuplicateAttemptError` | resolver los intentos; C2 V1 no los selecciona |
+| Score no vacío no finito o no parseable | exit `2`, `InvalidScoreError` | corregir el canonical |
+| Estructura canonical incompleta | exit `2`, `CanonicalFormatError` | regenerar el export C1 |
 | Archivo de policy inexistente | exit `1` `UsageError`, sin staging | crear el archivo |
 | Outcome/trace tampered tras review | `verify` falla | crear corrección |
 | Policy/engine version cambiadas tras review | approval rechazado | nuevo review |

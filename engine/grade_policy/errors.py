@@ -90,6 +90,33 @@ class UsageError(GradePolicyError):
     """Invalid CLI usage or invalid input file state."""
 
 
+class CanonicalFormatError(GradePolicyError):
+    """The canonical payloads are missing required fields or use wrong shapes.
+
+    C2 snapshot mode reads ``canonical/results.json`` (and the assessments and
+    subjects payloads) as-is; malformed structure is a data error, never a
+    silent missing policy.
+    """
+
+
+class DuplicateAttemptError(GradePolicyError):
+    """More than one canonical result for the same ``(studentId, assessmentId)``.
+
+    C2 V1 has no attempt-selection policy: an explicit future policy would be
+    required to choose among multiple attempts (first/last/best are all
+    forbidden as implicit rules).
+    """
+
+
+class InvalidScoreError(GradePolicyError):
+    """A canonical result carries a score that is not a finite number.
+
+    ``null``/empty means missing; anything else must parse to a finite
+    ``Decimal``. Non-finite values (NaN/Infinity) and unparseable data are
+    errors, never converted into a missing policy.
+    """
+
+
 def error_path(stage_id: Optional[str] = None, operator: Optional[str] = None) -> str:
     parts: List[str] = []
     if stage_id:

@@ -79,6 +79,7 @@ def c2_policy(assessments=("ev1", "ev2"), missing_policy: str = "zero") -> dict:
         "policyVersion": "1.0.0",
         "engineMinVersion": "0.1.0",
         "assessments": list(assessments),
+        "assessmentUnits": {aid: "percent" for aid in assessments},
         "stages": {
             "w": {
                 "id": "w",
