@@ -1209,6 +1209,60 @@ class CompatP0Test(C1TestCase):
             self.assertEqual(row["studentId"], source["studentId"])
             self.assertEqual(row["ies"], source["components"])
 
+    def test_real_legacy_consumer_processes_alias_unmodified(self):
+        """The real consumer (sync-section-indexes.py) reads the alias exactly as the
+        published export and produces evaluations/<SECTION>/grades.json with no changes."""
+        import importlib.util
+        import sys
+
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+
+        workspace = self.base / "consumer-ws"
+        section_dir = workspace / "evaluations" / SECTION
+        export_course = workspace / "exports" / "publication-input" / "course"
+        section_dir.mkdir(parents=True)
+        export_course.mkdir(parents=True)
+        write(
+            section_dir / "config.json",
+            {"course": {"name": SECTION}, "defaults": {}, "access": {}, "evaluations": {}},
+        )
+        write(section_dir / "students.json", {"students": []})
+        results_alias = json.loads(
+            (alias_root / "course/results.json").read_text(encoding="utf-8")
+        )
+        write(export_course / "results.json", results_alias)
+
+        script = Path(__file__).resolve().parents[3] / "engine" / "scripts" / "sync-section-indexes.py"
+        spec = importlib.util.spec_from_file_location("legacy_consumer_under_test", script)
+        consumer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(consumer)
+        consumer.ROOT = workspace
+
+        old_argv = list(sys.argv)
+        sys.argv = ["sync-section-indexes.py", "--section", SECTION]
+        try:
+            consumer.main()
+        finally:
+            sys.argv = old_argv
+
+        grades = json.loads((section_dir / "grades.json").read_text(encoding="utf-8"))["grades"]
+        canonical = json.loads(
+            (dest / "canonical/results.json").read_text(encoding="utf-8")
+        )["results"]
+        by_key = {(r["studentId"], r["assessmentId"], r["form"]): r for r in canonical}
+        self.assertEqual(len(grades), len(canonical), "same cardinality through the real consumer")
+        for row in grades:
+            source = by_key[(row["studentId"], row["evaluationId"], row["form"])]
+            self.assertEqual(row["form"], source["form"])
+            self.assertEqual(row["status"], source["status"])
+            self.assertEqual(row["score"], source["score"])
+            self.assertEqual(row["grade"], source["grade"])
+            self.assertEqual(row["finalFeedback"], source["feedback"])
+            self.assertEqual(row["ies"], source["components"])
+            self.assertIsNone(row["resultPath"], "private evidence path is never reproduced")
+
 
 # ---------------------------------------------------------------------------
 # Final compat: concurrency, crash-before/after-rename, privacy zero-files
