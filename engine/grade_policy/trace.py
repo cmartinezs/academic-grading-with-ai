@@ -1,0 +1,99 @@
+"""Structured trace and outcome serialization.
+
+These functions convert engine results into the plain, schema-shaped dicts
+that are later canonically serialized by ``jsonutil`` and written to
+``canonical/outcomes.json`` and ``canonical/traces.json``.
+"""
+
+from __future__ import annotations
+
+from typing import Mapping, Optional
+
+from .decimal import decimal_str
+from .models import AcademicValue, EngineOutcome
+from .version import __version__
+
+
+def value_dict(value: Optional[AcademicValue]) -> Optional[dict]:
+    if value is None:
+        return None
+    return {"value": decimal_str(value.value), "unit": value.unit}
+
+
+def outcome_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> dict:
+    from .engine import outcome_id
+
+    payload: dict = {
+        "subjectId": outcome.subject_id,
+        "outcomeId": outcome_id(section_id, outcome.subject_id, outcome.policy),
+        "policyId": outcome.policy.policy_id,
+        "status": outcome.status,
+        "resultStageId": outcome.result_stage_id,
+    }
+    if outcome.value is not None:
+        payload["value"] = value_dict(outcome.value)
+    return payload
+
+
+def trace_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> dict:
+    from .engine import outcome_id
+
+    stages = []
+    for ev in outcome.stages:
+        stage_payload: dict = {
+            "stageId": ev.stage.id,
+            "phase": ev.stage.phase,
+            "operator": ev.stage.operator,
+            "applied": ev.applied,
+        }
+        stage_payload["inputs"] = list(ev.normalized_inputs)
+        if ev.output is not None:
+            stage_payload["output"] = value_dict(ev.output)
+        if ev.condition_decision is not None:
+            stage_payload["condition"] = ev.condition_decision
+        if ev.decisions:
+            stage_payload["decisions"] = list(ev.decisions)
+        if ev.warnings:
+            stage_payload["warnings"] = list(ev.warnings)
+        stages.append(stage_payload)
+
+    return {
+        "subjectId": outcome.subject_id,
+        "outcomeId": outcome_id(section_id, outcome.subject_id, outcome.policy),
+        "policyId": outcome.policy.policy_id,
+        "stages": stages,
+    }
+
+
+def traces_document(
+    policy: object,
+    outcomes: Mapping[str, EngineOutcome],
+    section_id: Optional[str] = None,
+) -> dict:
+    return {
+        "schemaVersion": "1.0.0",
+        "policy": getattr(policy, "raw", policy),
+        "subjectTraces": [trace_dict(o, section_id) for o in outcomes.values()],
+    }
+
+
+def outcomes_document(
+    outcomes: Mapping[str, EngineOutcome], section_id: Optional[str] = None
+) -> dict:
+    return {
+        "schemaVersion": "1.0.0",
+        "subjectOutcomes": [outcome_dict(o, section_id) for o in outcomes.values()],
+    }
+
+
+def policy_hash(raw_policy: dict) -> str:
+    """Deterministic sha256 of the canonical policy document."""
+    from .serialize import sha256_text, serialize
+
+    return sha256_text(serialize(raw_policy))
+
+
+def hashlib_hex(payload: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
