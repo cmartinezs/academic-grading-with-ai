@@ -1,0 +1,89 @@
+name: C3 Email Delivery
+
+on:
+  push:
+    branches: [feat/c3-email-delivery]
+  pull_request:
+    branches: [master]
+
+jobs:
+  c3-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest jsonschema
+
+      - name: C3 unit tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v --tb=short -m "not network"
+
+      - name: C3 contract/schema tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Schema" --tb=short
+
+      - name: C3 determinism tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Determinism" --tb=short
+
+      - name: C3 privacy/masking tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Privacy or Masking" --tb=short
+
+      - name: C3 SQLite state machine tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "LedgerStateMachine" --tb=short
+
+      - name: C3 multiprocess concurrency tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Concurrency" --tb=short
+
+      - name: C3 failure injection tests
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Failure" --tb=short
+
+      - name: C3 fake transport integration
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "ExecuteWithFakeTransport" --tb=short
+
+      - name: C2 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/grade_policy/tests/ -v --tb=short
+
+      - name: C1 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/publication/tests/ -v --tb=short
+
+      - name: C0 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/c0/tests/ -v --tb=short
+
+      - name: Strict scanner
+        run: |
+          ./scripts/c0-scan.sh --tracked --strict
+
+  c3-no-network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify no SMTP real calls
+        run: |
+          ! grep -r "smtplib.SMTP\|socket.connect" engine/email_delivery/tests/ || exit 1
+
+  c3-no-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify no secrets in test fixtures
+        run: |
+          ! grep -rP "(password|secret|token)\s*=\s*['\"]" engine/email_delivery/tests/ || exit 1
