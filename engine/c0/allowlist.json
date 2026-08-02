@@ -36,6 +36,11 @@
       "path": "engine/scripts/publication_snapshot_test.py",
       "rules": ["chilean-rut"],
       "reason": "C1 synthetic E2E self-check uses a fictional RUT-shaped student id."
+    },
+    {
+      "path": "engine/grade_policy/tests/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "C2 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
     }
   ]
 }
