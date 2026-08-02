@@ -58,6 +58,10 @@ class AcademicValue:
     def with_value(self, value: Decimal) -> "AcademicValue":
         return AcademicValue(value, self.unit)
 
+    @classmethod
+    def from_scalar(cls, value, unit: str) -> "AcademicValue":
+        return cls(to_decimal(value), unit)
+
     def to_dict(self) -> dict:
         from .decimal import decimal_str
 
