@@ -683,6 +683,37 @@ def _approve_draft_locked(
     return dest
 
 
+def transition(
+    ctx: BuildContext,
+    event_type: str,
+    *,
+    actor: Optional[str] = None,
+    receipt: Optional[str] = None,
+    by_publication_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    validate_reference=None,
+) -> dict:
+    """Append a lifecycle event for ``ctx.publication_id`` under the publication lock.
+
+    The per-(section, publication) lock is acquired first and the ledger's
+    section-level lock is taken inside ``append``, so the ordering is always
+    publication lock -> lifecycle lock. Lifecycle transitions therefore
+    serialize with compatibility generation and with build/review/approve (which
+    use the same lock), so a terminal event can never interleave with view
+    publication for the same publication.
+    """
+    with publication_lock(ctx.runtime.state_root, ctx.section_id, ctx.publication_id):
+        return ctx.ledger().append(
+            event_type,
+            ctx.publication_id,
+            actor=actor,
+            receipt=receipt,
+            by_publication_id=by_publication_id,
+            reason=reason,
+            validate_reference=validate_reference,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Status helpers
 # ---------------------------------------------------------------------------

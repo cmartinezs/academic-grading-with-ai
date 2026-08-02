@@ -224,17 +224,16 @@ def cmd_transition(args) -> int:
             )
         manifest = read_json(dest / "manifest.json")
         declared = manifest.get("supersedesPublicationId" if event_type == "superseded" else "correctsPublicationId")
-        if declared != args.publication:
+        if declared != ctx.publication_id:
             raise InvalidTransitionError(
                 f"{event_type} references {by_publication_id!r} whose manifest declares "
                 f"{'supersedes' if event_type == 'superseded' else 'corrects'}PublicationId="
-                f"{declared!r}, expected {args.publication!r}."
+                f"{declared!r}, expected {ctx.publication_id!r}."
             )
 
-    ledger = ctx.ledger()
-    event = ledger.append(
+    event = builder.transition(
+        ctx,
         args.event,
-        args.publication,
         actor=args.actor,
         receipt=args.receipt,
         by_publication_id=args.by_publication,

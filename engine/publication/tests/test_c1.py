@@ -140,6 +140,8 @@ def _run_workers(jobs) -> list:
 
 def _mp_dispatch_compat(kind: str, base: str, section: str, pub: str, env: dict):
     """Worker for compat operations on an already-approved snapshot (picklable)."""
+    import json
+
     from publication import builder, compat
     from publication.clock import Clock
 
@@ -153,7 +155,23 @@ def _mp_dispatch_compat(kind: str, base: str, section: str, pub: str, env: dict)
         elif kind == "compat_generate_replace":
             return ("ok", compat.generate(ctx, update_legacy_aliases=True, replace_legacy_aliases=True))
         elif kind == "compat_revoke":
-            ctx.ledger().append("revoked", pub, actor="ops", reason="concurrent")
+            builder.transition(ctx, "revoked", actor="ops", reason="concurrent")
+            return ("ok", None)
+        elif kind == "compat_corrected":
+            sections = ctx.sections_root() / section
+            by_pub = None
+            if sections.is_dir():
+                for d in sorted(p for p in sections.iterdir() if p.is_dir()):
+                    manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+                    if manifest.get("correctsPublicationId") == pub:
+                        by_pub = d.name
+                        break
+            if by_pub is None:
+                return ("PublicationError", "no correcting publication for the race")
+            builder.transition(
+                ctx, "corrected", actor="ops", by_publication_id=by_pub,
+                validate_reference=lambda _by, _et: None,
+            )
             return ("ok", None)
         else:
             raise ValueError(f"unknown kind: {kind}")
@@ -1714,5 +1732,99 @@ class ReconcileFilterTest(C1TestCase):
         self.assertEqual(second, [])
 
 
+# ---------------------------------------------------------------------------
+# Final: lifecycle transitions serialize with compatibility generation via the
+# same publication lock (publication lock -> lifecycle lock); views are never
+# published after a terminal event.
+# ---------------------------------------------------------------------------
+
+
+class TransitionCompatSerializationTest(C1TestCase):
+    def _base_env(self, base):
+        return {
+            "ACADGRAD_PRIVATE_ROOT": str(base / "roots" / "priv"),
+            "ACADGRAD_STATE_ROOT": str(base / "roots" / "state"),
+            "ACADGRAD_PUBLICATIONS_ROOT": str(base / "roots" / "pub"),
+            "ACADGRAD_TEMP_ROOT": str(base / "roots" / "tmp"),
+        }
+
+    def _approve_in(self, base, env, pub, **build_kwargs):
+        legacy = base / "legacy"
+        write(legacy / "manifest.json", {"course": {"id": SECTION}, "schemaVersion": 1})
+        write(legacy / "course/course.json", DEFAULT_COURSE)
+        write(legacy / "course/students.json", {"items": DEFAULT_STUDENTS})
+        write(legacy / "course/evaluations.json", {"items": DEFAULT_EVALUATIONS})
+        write(legacy / "course/results.json", {"items": DEFAULT_RESULTS})
+        write(legacy / "course/course-summary.json", {"students": 2, "evaluations": 2})
+        IdentityStore(Path(env["ACADGRAD_STATE_ROOT"]) / "identity").ensure_many(
+            [
+                {"external": {"rut": RUT_A}, "display_name": f"S {RUT_A}"},
+                {"external": {"rut": RUT_B}, "display_name": f"S {RUT_B}"},
+            ]
+        )
+        ctx = builder.BuildContext.resolve(
+            base, SECTION, publication_id=pub, env=env, clock=Clock(env=env),
+            legacy_source=legacy,
+        )
+        result = builder.build_draft(ctx, **build_kwargs)
+        builder.review_draft(ctx, result.review_hash, "reviewer-a", content_hash=result.content_hash)
+        builder.approve_draft(ctx, result.review_hash, "approver-a", "approve", content_hash=result.content_hash)
+        return ctx, result.content_hash
+
+    def test_generate_vs_terminal_never_publishes_after_terminal(self):
+        """Race ``compat.generate`` against a terminal transition on the same
+        publication. Both are serialized by the publication lock, so a generate
+        that wins the lock publishes while the snapshot is approved and the
+        terminal event is appended afterwards; a generate that loses sees the
+        terminal state and publishes nothing. Views are never produced after the
+        terminal event."""
+        seen_views = 0
+        seen_no_views = 0
+        for terminal_kind in ("revoked", "corrected"):
+            for _ in range(8):
+                base = Path(tempfile.mkdtemp(prefix="c1-race-"))
+                self.addCleanup(force_rmtree, base)
+                env = self._base_env(base)
+                self._approve_in(base, env, "pub_a")
+                if terminal_kind == "corrected":
+                    self._approve_in(base, env, "pub_b", **{"corrects_publication_id": "pub_a"})
+                jobs = [
+                    ("compat_generate", str(base), SECTION, "pub_a", env),
+                    ("compat_revoke" if terminal_kind == "revoked" else "compat_corrected", str(base), SECTION, "pub_a", env),
+                ]
+                results = _run_workers_compat(jobs)
+                generate_outcome = results[0][0]
+                self.assertEqual(results[1][0], "ok", results)
+
+                ctx = builder.BuildContext.resolve(
+                    base, SECTION, publication_id="pub_a", env=env, clock=Clock(env=env),
+                    legacy_source=base / "legacy",
+                )
+                terminal = [
+                    e for e in ctx.ledger().read_events()
+                    if e.get("publicationId") == "pub_a" and e.get("event") == terminal_kind
+                ]
+                self.assertEqual(len(terminal), 1, results)
+                view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+                if view_root.is_dir():
+                    envelope = json.loads((view_root / "grades.json").read_text(encoding="utf-8"))
+                    self.assertEqual(envelope["sourcePublicationId"], "pub_a")
+                    self.assertLessEqual(
+                        envelope["generatedAt"], terminal[0]["at"],
+                        f"views published after the {terminal_kind} event",
+                    )
+                    self.assertEqual(generate_outcome, "ok", results)
+                    seen_views += 1
+                else:
+                    self.assertEqual(generate_outcome, "PublicationError", results)
+                    seen_no_views += 1
+        self.assertGreaterEqual(seen_views, 1, "the race must exercise the generate-wins ordering")
+        self.assertGreaterEqual(seen_no_views, 1, "the race must exercise the terminal-first ordering")
+
+
+# ---------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
+
     unittest.main()
