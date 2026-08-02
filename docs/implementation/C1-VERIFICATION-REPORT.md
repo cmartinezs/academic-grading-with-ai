@@ -18,7 +18,7 @@ reconciliación por publicación).
 
 | Check | Resultado |
 |---|---|
-| C1 suite unittest (111 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery, compat final, aliases atómicos, privacidad de excepciones, reconcile por publicación) | `OK` |
+| C1 suite unittest (113 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery, compat final, aliases atómicos, privacidad de excepciones, consumer real, reconcile por publicación) | `OK` |
 | C1 self-check E2E sintético (build → review → approve → published → compat → supersede) | `OK` |
 | Regresión C0 (92 tests) | `OK` |
 | Scan tracked estricto (186 archivos) | `BLOCK=0 REVIEW=0` |
@@ -47,7 +47,7 @@ reconciliación por publicación).
   `scripts/publication-snapshot.sh` (build/verify/review/approve/status/transition/
   compatibility/reconcile/discard/test). Exit codes 0/1/2. Redacción de RUT/email/paths
   en stderr.
-- Tests: `engine/publication/tests/test_c1.py` (111 tests, incluidos workers
+- Tests: `engine/publication/tests/test_c1.py` (113 tests, incluidos workers
   multiproceso) + runner `engine/scripts/publication_snapshot_test.py`.
 - CI `.github/workflows/c1.yml` (tests/E2E, regresión C0, scan estricto).
 - Docs: plan, contrato, runbooks; README, STRUCTURE_INVENTORY,
@@ -110,12 +110,16 @@ reconciliación por publicación).
 - **Contrato legacy exacto**: aliases con wrappers `{"items": [...]}` y claves
   contractuales (`studentId` opaco, `evaluationId`, `form`, `status`, `score`, `grade`,
   `resultPath` null explícito, `finalFeedback`, `ies`); `name`/`rut` vacíos; validador
-  estructural que rechaza wrappers rotos o claves faltantes; consumer test que lee los
-  aliases como `sync-section-indexes.py`.
-- **Privacidad de excepciones en el origen**: adapter/legacy/builder/compat no emiten
+  estructural que rechaza wrappers rotos o claves faltantes; consumer test que importa el
+  consumidor real `sync-section-indexes.py` y demuestra que lee el alias sin cambios
+  (cardinalidad, forms, estados, scores, grades, feedback y components equivalentes).
+- **Privacidad de excepciones en el origen**: adapter/legacy/builder/compat/verify no emiten
   RUT (huella opaca SHA-256), ni paths absolutos, ni roots privados/state/temp en mensajes;
-  el CLI `_redact()` queda como segunda línea de defensa (ahora también paths absolutos).
-  Tests: `ExceptionPrivacyTest` cubre cada ruta pública y el stderr del CLI por subprocess.
+  los findings G6 referencian el archivo relativo sin reproducir el valor (el path absoluto
+  ya no aparece en `GateError.details` ni en la excepción). El CLI `_redact()` queda como
+  segunda línea de defensa (ahora también paths absolutos).
+  Tests: `ExceptionPrivacyTest` cubre cada ruta pública, el finding G6 con path absoluto y el
+  stderr del CLI por subprocess.
 - **Reconciliación por publicación**: `reconcile(ctx, publication_id=None)` valida el id,
   errores claros para id inexistente, rechazo de id inválido y toca solo ese snapshot.
   Tests: sección con 3 snapshots donde solo el segundo se reconcilia; primero y tercero
@@ -152,6 +156,7 @@ profunda de referencias); el flujo legacy sigue intacto.
 - `b8f2fbc` test(C1 compat/aliases): failure injection and concurrency coverage
 - `c26cbc8` fix(C1 privacy): sanitize exceptions at source, never leak PII or paths
 - `e11dd58` fix(C1 reconcile): scope reconciliation to a single publication
+- `3268f68` docs(C1 final): contract/runbooks/verification report, inventory and PR body
 
 ## Observaciones
 
