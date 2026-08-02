@@ -51,6 +51,11 @@
       "path": "engine/email_delivery/tests/**",
       "rules": ["chilean-rut", "email"],
       "reason": "C3 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
+    },
+    {
+      "path": "docs/implementation/C3-*.md",
+      "rules": ["secret-assignment"],
+      "reason": "C3 documentation references the password variable name descriptively; no actual secrets."
     }
   ]
 }
