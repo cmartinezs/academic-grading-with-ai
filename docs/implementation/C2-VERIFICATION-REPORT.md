@@ -2,24 +2,24 @@
 
 Corte **C2 — Grade Policy Engine** (motor determinista de políticas de
 calificación), branch `feat/c2-grade-policy-engine`. Este reporte cubre la
-tercera iteración de C2: cierre de la divergencia entre el contrato y la
-implementación (params tipados de operadores, condiciones unit-aware, aristas de
-refs de operador en el DAG, paridad contra los ejemplos oficiales del contrato,
-sin errores crudos en runtime). Motor `0.2.0`; `outcomes`/`traces` en schema
-`1.1.0` (aditivo; 1.0.0 conservado y aún válido).
+cuarta iteración de C2: cierre de tres hallazgos residuales (contrato oficial,
+restricción V1 del target de `replaceLowestInput` y `zero` de
+`piecewiseLinearScale`). Motor `0.2.0`; `outcomes`/`traces` en schema `1.1.0`
+(aditivo; 1.0.0 conservado y aún válido).
 
 ## Base
 
 - `master` en el estado de C1 (C1 119 tests + E2E OK, C0 92 tests OK, scan
   estricto `BLOCK=0 REVIEW=0`).
-- Rama `feat/c2-grade-policy-engine` sobre `master`; PR #5 (open, mergeable).
-- Head verificado: `f26ba5c` (contiene este reporte).
+- Rama `feat/c2-grade-policy-engine` sobre `master`; PR #5 (Draft, open).
+- Head verificado: `6c4b531` (código y tests de la iteración 4; este reporte se
+  registra en el commit encima, patrón igual al de la iteración 3).
 
 ## Resultado
 
 | Check | Resultado |
 |---|---|
-| C2 suite unittest (159 tests: schema/semantic gates, DAG + aristas de condición y de refs de operador, paridad con los ejemplos oficiales del contrato, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0 con `operatorData`, determinismo Decimal, integración de snapshot, inyección de fallos, introspección de specs de operadores, sin errores crudos en runtime) | `OK` |
+| C2 suite unittest (**176 tests**: schema/semantic gates, DAG + aristas de condición y de refs de operador, paridad con el ejemplo oficial §2 **copiado literalmente** del contrato, restricción V1 del target de `replaceLowestInput`, `zero` de `piecewiseLinearScale`, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0 con `operatorData`, determinismo Decimal, integración de snapshot, inyección de fallos, introspección de specs de operadores, sin errores crudos en runtime) | `OK` |
 | C2 self-check E2E sintético (`calculate` weightedAverage + round → `SUBJ-E2E → 76`) | `OK` |
 | Regresión C1 (119 tests + E2E synthetic) | `OK` |
 | Regresión C0 (92 tests) | `OK` |
@@ -34,69 +34,86 @@ sin errores crudos en runtime). Motor `0.2.0`; `outcomes`/`traces` en schema
   `StageState`, `MissingDecision`, `ResolvedInput`, `EvalContext` con
   `stage_states`/`stage_reasons`/`units`/`resolve_ref`, `EngineOutcome` con
   `state`/`finalizable`/`stages`), `conditions` (6 condiciones, `params.ref`),
-  `graph` (`condition_refs` lee `condition.params.ref`; aristas de condición de
-  primera clase; `topological_order` separado de `plan`; detección de
-  ciclos/stages muertos/inalcanzables), `units` (`propagate_units` topológico,
-  no adivina), `validator` (gates de unidad tipados, orden de fases,
-  `minimumOutput`/`outputUnit`, mezcla de unidades estática), `registry`,
-  `version`, `serialize`, `trace` (1.1.0: `resultState`, `finalizable`,
-  `missingDecisions`, estados por input), `snapshot`, `engine` (ejecución pura
-  con propagación de estados y motivos), `errors` tipados.
-- `engine/grade_policy/operators/`: `base` (`OperatorSpec` ampliado con
-  `OperatorReference`/`referenced_refs`/`min_inputs`/`max_inputs`/`weight_rule`/
-  `semantic_validate`) + 8 operadores V1 con params tipados según el contrato:
-  `cap`/`floor` con bounds `{value, unit}` obligatorios, `sum` con `cap`/`floor`
-  opcionales tipados, `piecewiseLinearScale` con `breakpoints [{x,y}]` +
-  `outputUnit` + `outsideRange` (clamp/reject, `OutOfRangeError`),
-  `additiveBonus` con `target`/`source`/`cap`, `replaceLowestInput` con
-  `target`/`source`/`tiePolicy` (recalcula el promedio ponderado del target,
-  nunca una suma), `weightedAverage` sin `params.weights` (pesos solo en
-  `InputRef`), `round` con `decimalPlaces` o `quantum`. `EvalResult`/traces
-  registran `operatorData` por stage.
-- `engine/grade_policy/conditions.py`: 6 condiciones unit-aware (`statusEquals`/
-  `assessmentPresent`/`assessmentMissing` con ref=assessment; `scoreAtLeast`/
-  `scoreBelow` con threshold `{value, unit}`; `levelAtLeast` con `level` y
-  catálogo `levels` opcional); `CONDITION_REF_KINDS`.
-- `engine/grade_policy/schemas/`: `policy.schema.json` (con `assessmentUnits`),
-  `outcomes-1.1.0.schema.json` y `traces-1.1.0.schema.json` (nuevos, `operatorData`
-  permitido) + versiones 1.0.0 intactas; selector por `schemaVersion` (fail-closed).
-- Integración publicación (aditiva): hook `build_c2_payloads`; verifier
-  mode-aware que valida los artefactos C2 contra el schema `1.1.0` declarado.
-- CLI `engine/scripts/grade_policy.py` (0.2.0) + wrapper
-  `scripts/grade-policy.sh`; `explain` imprime estados tipados y
-  `missingDecisions`; `calculate` emite `1.1.0` con `resultState`/`finalizable`.
-- Tests (9 archivos): `test_conformance.py`, `test_property.py`
-  (incluye propagación de unidades), `test_dag_conditions.py`,
-  `test_units.py`, `test_missing_policies.py`, `test_states.py`,
-  `test_snapshot_integration.py`, `test_contract_parity.py`,
+  `graph`, `units` (`propagate_units` topológico, no adivina), `validator`,
+  `registry`, `version`, `serialize`, `trace`, `snapshot`, `engine`, `errors`
+  tipados.
+- `engine/grade_policy/operators/`: 8 operadores V1 con params tipados según el
+  contrato. En esta iteración:
+  - `replaceLowestInput`: target restringido en V1 (ver § Hallazgo 2);
+  - `piecewiseLinearScale`: `zero` con unidad del input ref, check de rango
+    antes de escalar (ver § Hallazgo 3).
+- `engine/grade_policy/snapshot.py`: el adaptador de canonical respeta la unidad
+  declarada por assessment (`assessmentUnits`), con `percent` por defecto, de
+  modo que el ejemplo oficial §2 (con `EvG: level`) genera snapshot C2 sin
+  fallar por unidad.
+- Tests (9 archivos): `test_conformance.py`, `test_property.py`,
+  `test_dag_conditions.py`, `test_units.py`, `test_missing_policies.py`,
+  `test_states.py`, `test_snapshot_integration.py`, `test_contract_parity.py`,
   `test_no_unhandled_exceptions.py`, `test_operator_specs.py`.
 - Docs: plan, contrato, runbooks y este reporte.
+
+## Hallazgos residuales cerrados
+
+### 1. Contrato oficial (C2-GRADE-POLICY-CONTRACT.md)
+
+- `condition` se movió desde `replaceLowestInput.params` a `stage.condition`.
+- La fuente del reemplazo es `PCT` (`percent`); `EvG` (`level`) se usa solo como
+  condición `levelAtLeast`.
+- `scoreAtLeast`/`scoreBelow` usan `threshold: {value, unit}`.
+- Se eliminaron las policies de ejemplo que el engine rechazaba.
+- El ejemplo §2 ahora **valida sin modificación**, calcula un outcome final
+  (`5.56` grade) y genera snapshot C2. El test de paridad lo **copia
+  literalmente** desde el documento (extrae el bloque JSON de la sección §2 y lo
+  carga sin transformación).
+
+### 2. Restricción V1 del target de `replaceLowestInput`
+
+Para cerrar C2 sin ampliar el contexto de ejecución:
+
+- `target` debe ser `weightedAverage`; `target.missingPolicy` debe ser `fail` o
+  estar ausente; `target` no puede tener `condition`.
+- Al ejecutar, `target` debe estar en `state=value`; el runtime resuelve el
+  estado del target **antes** de leer candidatos.
+- Todos los candidatos del target están presentes; sus pesos son positivos y
+  suman 1; los pesos originales **son** los pesos efectivos (sin exclusión ni
+  renormalización).
+- El validator rechaza target con `zero`, `excludeAndRenormalize`,
+  `minimumOutput`, `pending`, `notApplicable` o `condition`.
+- Tests: target válido, target `pending` rechazado por validation y propagado en
+  runtime como error tipado, target `skippedCondition` rechazado, target
+  `excludeAndRenormalize`/`zero` rechazados, pesos utilizados iguales a los del
+  target.
+- Limitación documentada explícitamente en el contrato §6 y en los runbooks.
+
+### 3. `zero` en `piecewiseLinearScale`
+
+En `missingPolicy=zero`:
+
+- La unidad esperada se obtiene del **input ref** (nunca de `params.outputUnit`).
+- El cero se crea en la unidad de entrada; `_check_outside` se ejecuta **antes**
+  de `_scale`.
+- `outsideRange=reject` lanza `OutOfRangeError`; `clamp` produce el extremo
+  correspondiente.
+- Tests: input `percent` → output `grade`, cero dentro del rango, cero fuera del
+  rango con `clamp`, cero fuera del rango con `reject`, trace conserva la
+  decisión `zero`, paridad de unidad estática/runtime del output.
 
 ## Gates
 
 - Schema (Draft 2020-12): policy `1.0.0`; outcomes/traces `1.1.0` (y `1.0.0`
   conservado); major desconocida falla cerrado.
-- Semántico:
-  - pesos suman 1 (solo `weightedAverage`; pesos prohibidos en el resto), refs
-    existen, `resultStageId` alcanzable, sin ciclos (incluyendo aristas de
-    condición y de refs de operador), sin dependencias hacia fases posteriores,
-    aridad por operador, refs de input duplicados;
-  - params tipados por operador: `cap`/`floor`/`sum cap|floor` con `{value, unit}`,
-    `piecewiseLinearScale` con `outputUnit` + `breakpoints` crecientes +
-    `outsideRange`, `additiveBonus`/`replaceLowestInput` con refs existentes y
-    unidades compatibles, `replaceLowestInput` con target `weightedAverage` y
-    `tiePolicy` válido;
-  - unidad tipada: `assessmentUnits` declaradas, unidad estática == unidad de
-    runtime (`UnitMismatchError` en caso contrario), sin adivinanzas;
-  - `minimumOutput` exige `params.minimum {value, unit}` con unidad del stage;
-  - `missingPolicy` dentro de la matriz exacta del operador;
-  - condición con `params.ref` inexistente → fallo cerrado; ref-kind por
-    condición (`assessment` para `statusEquals`/`assessmentPresent`/
-    `assessmentMissing`); threshold tipado; `levelAtLeast` exige unidad `level` y
-    `level` ∈ catálogo `levels` cuando está presente.
-- Runtime: unidades mezcladas conocidas rechazadas; `zero` rellena con la
-  unidad esperada del stage (nunca una unidad global); sin inputs presentes con
-  unidad no declarada → error tipado.
+- Semántico: pesos suman 1 (solo `weightedAverage`), refs existen,
+  `resultStageId` alcanzable, sin ciclos (incluyendo aristas de condición y de
+  refs de operador), sin dependencias hacia fases posteriores, aridad por
+  operador, params tipados por operador, target de `replaceLowestInput`
+  restringido en V1, unidad tipada (estática == runtime, fail-closed),
+  `minimumOutput` exige `params.minimum {value, unit}`, missing policy dentro de
+  la matriz exacta, condición con `params.ref` y ref-kind por condición,
+  threshold tipado, `levelAtLeast` exige unidad `level` y `level` ∈ catálogo.
+- Runtime: unidades mezcladas rechazadas; `zero` con la unidad esperada del
+  input; sin inputs presentes con unidad no declarada → error tipado; target de
+  `replaceLowestInput` fuera de `state=value` → error tipado antes de leer
+  candidatos.
 - `policyHash`: sha256 de los bytes canónicos de la policy.
 - `outcomeId`: `out_` + sha256 truncado de `sectionId|subjectId|resultStageId|policyId`.
 - Snapshots C2: manifest files/contentHash/reviewHash cubren los artefactos C2;
@@ -125,47 +142,27 @@ sin errores crudos en runtime). Motor `0.2.0`; `outcomes`/`traces` en schema
 | `notApplicable` | `notApplicable` |
 | `skippedCondition` (condición no satisfecha) | `pending`, no finalizable |
 
-Propagación hacia abajo con motivo (p. ej. `pending` por `missing` upstream);
-`finalizable` solo cuando el stage de resultado está en `value`.
+Propagación hacia abajo con motivo; `finalizable` solo cuando el stage de
+resultado está en `value`.
 
 ## Conformidad con el contrato
 
-- §2 documento: `assessments` + `assessmentUnits` + `stages` keyed por id;
-  condiciones `{"kind", "params"}`.
-- §4 estados tipados; §5 unidades (inferencia estática sin adivinanzas, `zero`
-  por unidad esperada, `outputUnit` explícito); §6 matriz operador × policy ×
-  unidades; §7 condiciones con `params.ref` como arista del DAG; §8 missing
-  policies; §9 trace 1.1.0; §10 outcome 1.1.0 con `resultState`/`finalizable`;
-  §11 schema versioning; §12 snapshot C2; §14 exit codes CLI 0/1/2.
+- §2 documento: ejemplo oficial válido, copiado literalmente por el test;
+  condiciones `{"kind", "params"}` en `stage.condition`.
+- §4 estados tipados; §5 unidades (`zero` por unidad esperada del input;
+  `piecewiseLinearScale` como único conversor); §6 matriz operador × policy ×
+  unidades y restricción V1 del target; §7 condiciones con `params.ref` y
+  threshold tipado `{value, unit}`; §8 missing policies; §9 trace 1.1.0; §10
+  outcome 1.1.0; §11 schema versioning; §12 snapshot C2; §14 exit codes CLI 0/1/2.
 - FPY1101: solo reglas verificadas (`weighted_average`, `percent_to_grade`,
   defaults de `engine/defaults.json`); PCT/EvG modelados como
   `additiveBonus`+cap y `replaceLowestInput`+`levelAtLeast`.
 - Compatibilidad: camino legacy sin `--grade-policy` byte-compatible; schemas
   C1 intactos; verifier aditivo por `mode`/versión.
 
-## Paridad con el ejemplo oficial (§2)
-
-El documento oficial del contrato se ejercita verbatim en
-`test_contract_parity.py`. Dos tensiones internas del contrato se resuelven a
-favor de disposiciones más claras:
-
-- `condition` vive en `stage.condition`, no dentro de `params` (§2 Reglas del
-  documento y §7 definen la condición como puerta de stage de primera clase;
-  duplicarla en `params` rompería la única ubicación). Un `condition` dentro de
-  `params` es rechazado.
-- La fuente `EvG` del ejemplo es `level` mientras los candidatos del target son
-  `percent`. §13 prohíbe mezclar unidades conocidas en un stage homogéneo y §6
-  exige conservar la unidad del target; el motor rechaza esa mezcla en
-  validación (mensaje `incompatible with candidate`) en lugar de fallar en
-  runtime. La variante unit-coherente del pipeline se ejecuta end-to-end
-  (evidencia esperada `5.56`).
-
-Además, `levelAtLeast` acepta el catálogo `levels` (§7) y valida que `level`
-pertenezca a él.
-
 ## Commits
 
-Iteración 1 (base, pre-fix):
+Iteración 1 (base):
 
 - `04ed05d` docs: define C2 grade policy implementation plan
 - `43f75e4` docs: define C2 grade policy contracts
@@ -181,20 +178,21 @@ Iteración 1 (base, pre-fix):
 - `2db987f` ci: add C2 grade policy engine gates
 - `796b6eb` docs: add C2 runbooks and verification report
 
-Iteración 3 (este reporte): cierre de la divergencia contrato ↔ implementación
-(params tipados, condiciones unit-aware, refs de operador como aristas, paridad
-con ejemplos oficiales, sin errores crudos en runtime), suites nuevas
-(`test_contract_parity.py`, `test_no_unhandled_exceptions.py`,
-`test_operator_specs.py`) y docs actualizadas. Commits a continuación de la
-iteración 2 en el PR #5.
+Iteración 3 (cierre de la divergencia contrato ↔ implementación): `1ad0e5e`,
+`f26ba5c`, `b49fbdc`.
 
-- `1ad0e5e` feat: harden C2 engine semantics (typed units, states, missing policies)
+Iteración 4 (este reporte): cierre de los tres hallazgos residuales (contrato
+oficial, target V1 de `replaceLowestInput`, `zero` de `piecewiseLinearScale`).
+Commits a continuación de la iteración 3 en el PR #5:
+
+- `6c4b531` feat: close C2 residual findings (contract parity, replaceLowestInput
+  target V1, piecewise zero)
 
 ## CI
 
 - Workflow `.github/workflows/c2.yml`: suite C2, regresión C1, regresión C0 y
   scan estricto.
-- Estado remoto en el head verificado `1ad0e5e`: **verde** — `C2 grade policy
+- Estado remoto en el head verificado `6c4b531`: **verde** — `C2 grade policy
   engine gates` success, `C1 publication snapshot gates` success, `C0 security
   gates` success.
 
@@ -206,8 +204,9 @@ iteración 2 en el PR #5.
   runtime, no en validación.
 - `level` participa en condiciones `levelAtLeast`; no hay operaciones
   aritméticas sobre unidades `level`.
+- La restricción V1 del target de `replaceLowestInput` es una limitación
+  deliberada de V1: un target con exclusión/renormalización o condición
+  requeriría ampliar el contexto de ejecución del operador y queda fuera de C2.
 - La matriz exacta se impone en validación semántica (no expresable en JSON
   Schema); quedó cubierta por `test_missing_policies.py` y
   `test_contract_parity.py`.
-- El ejemplo oficial §2 mezcla `level`/`percent` en `replaceLowestInput`; se
-  rechaza en validación (resolución documentada en § Paridad).
