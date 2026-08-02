@@ -53,6 +53,10 @@ Después de crear una evaluación:
 ./scripts/review-batch.sh <EV> --form D --limit 3
 ./scripts/workspace-status.sh
 ./scripts/export-results.sh
+# C1: build a verifiable snapshot of the legacy export and publish it
+./scripts/publication-snapshot.sh --section <SECTION_CODE> build --publication <PUB_ID>
+./scripts/publication-snapshot.sh --section <SECTION_CODE> reconcile [--publication <PUB_ID>]
+./scripts/publication-snapshot.sh --section <SECTION_CODE> compatibility [--update-legacy-aliases] [--replace-legacy-aliases]
 ```
 
 `SECTION_CODE` selecciona la sección activa cuando existe más de una carpeta en `evaluations/`.
@@ -67,3 +71,6 @@ Después de crear una evaluación:
 - [Structure inventory](STRUCTURE_INVENTORY.md)
 - [Onboarding simulation](onboarding/guide.md)
 - [Export contract](engine/docs/export-publication.md)
+- [C1 implementation plan](docs/implementation/C1-IMPLEMENTATION-PLAN.md)
+- [C1 snapshot contract](docs/implementation/C1-SNAPSHOT-CONTRACT.md)
+- [C1 runbooks](docs/implementation/C1-RUNBOOKS.md)

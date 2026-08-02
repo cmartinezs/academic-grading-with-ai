@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/review/1.0.0",
+  "title": "Snapshot review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "publicationId", "contentHash", "reviewHash", "reviewedBy", "reviewedAt", "status"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewedBy": { "type": "string", "minLength": 1 },
+    "reviewedAt": { "type": "string", "format": "date-time" },
+    "status": { "const": "reviewed" }
+  }
+}

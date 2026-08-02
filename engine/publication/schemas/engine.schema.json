@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/engine-provenance/1.0.0",
+  "title": "Provenance engine",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "engineVersion", "adapterVersion", "adapter"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "engineVersion": { "type": "string", "minLength": 1 },
+    "adapterVersion": { "type": "string", "minLength": 1 },
+    "adapter": { "const": "legacy-export-adapter" }
+  }
+}

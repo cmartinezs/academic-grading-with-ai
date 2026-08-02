@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/subjects/1.0.0",
+  "title": "Canonical subjects",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sectionId", "subjects"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "sectionId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "subjects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["studentId"],
+        "properties": {
+          "studentId": { "type": "string", "pattern": "^stu_[A-Za-z0-9]{1,64}$" },
+          "academicState": { "type": "object" },
+          "refs": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    }
+  }
+}

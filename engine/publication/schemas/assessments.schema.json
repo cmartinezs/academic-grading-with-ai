@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading-with-ai/schemas/assessments/1.0.0",
+  "title": "Canonical assessments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sectionId", "assessments"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "sectionId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["assessmentId"],
+        "properties": {
+          "assessmentId": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "title": { "type": ["string", "null"] },
+          "type": { "type": ["string", "null"] },
+          "date": { "type": ["string", "null"] },
+          "forms": { "type": "array", "items": { "type": "string" } },
+          "refs": { "type": "array", "items": { "type": "object" } }
+        }
+      }
+    }
+  }
+}
