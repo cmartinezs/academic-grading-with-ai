@@ -1508,6 +1508,19 @@ class ExceptionPrivacyTest(C1TestCase):
         for leak in self._leak_strings():
             self.assertNotIn(leak, text, f"exception leaks {leak!r}")
 
+    def test_privacy_gate_finding_does_not_leak_absolute_path(self):
+        """G6 findings surface in GateError.details and must never embed the value."""
+        results = deepcopy(DEFAULT_RESULTS)
+        results[0]["finalFeedback"] = f"see {self.base}/leaked/absolute/path for details"
+        self.write_legacy(results=results)
+        ctx = self.prep()
+        with self.assertRaises(GateError) as cm:
+            builder.build_draft(ctx)
+        self._assert_clean(cm.exception)
+        for detail in cm.exception.details:
+            for leak in self._leak_strings():
+                self.assertNotIn(leak, detail, f"finding detail leaks {leak!r}")
+
     def test_unmapped_student_exception_clean(self):
         self.ensure_identity([RUT_A])
         ctx = self.ctx()

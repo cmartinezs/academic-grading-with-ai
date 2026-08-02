@@ -247,9 +247,8 @@ def gate_privacy(report: VerifyReport, root: Path, files: dict[str, Path], known
                 report.add("G6-privacy", f"{rel}: {finding.severity} {finding.rule}: {finding.message}")
 
         payload = _json_payload(path)
-        if payload is not None:
-            for value in _iter_abs_path_values(payload):
-                report.add("G6-privacy", f"Absolute path or file URL in {rel}: {value!r}")
+        if payload is not None and _iter_abs_path_values(payload):
+            report.add("G6-privacy", f"Absolute path or file URL in {rel}")
 
         if rel.startswith(CANONICAL_PREFIX):
             if payload is not None:
