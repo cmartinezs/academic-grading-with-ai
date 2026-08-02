@@ -34,7 +34,7 @@ spec = OperatorSpec(
     min_engine_version="0.1.0",
     params_schema={
         "type": "object",
-        "properties": {"min": {"type": "number"}},
+        "properties": {"min": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"}},
         "additionalProperties": False,
     },
     allowed_phases=("adjustment", "finalization"),

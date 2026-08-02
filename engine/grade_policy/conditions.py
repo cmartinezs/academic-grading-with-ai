@@ -148,7 +148,10 @@ CONDITION_PARAM_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
-            "threshold": {"type": "number"},
+            "threshold": {
+                "type": ["number", "string"],
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+            },
         },
         "required": ["ref", "threshold"],
         "additionalProperties": False,
@@ -157,7 +160,10 @@ CONDITION_PARAM_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
-            "threshold": {"type": "number"},
+            "threshold": {
+                "type": ["number", "string"],
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+            },
         },
         "required": ["ref", "threshold"],
         "additionalProperties": False,

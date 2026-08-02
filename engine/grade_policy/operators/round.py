@@ -31,7 +31,9 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
         raise SchemaValidationError(f"stages[{spec.id}].operator=round: unknown mode {mode!r}.")
 
     quantum = Decimal(1).scaleb(-places)
-    result = value.value.quantize(quantum, rounding=ROUND_MODE_MAP[mode])
+    from ..decimal import run
+
+    result = run(lambda: value.value.quantize(quantum, rounding=ROUND_MODE_MAP[mode]))
     return EvalResult(AcademicValue(result, value.unit))
 
 
