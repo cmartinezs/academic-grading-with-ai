@@ -99,8 +99,9 @@ def cmd_prepare(args):
             recipient_count=plan.recipient_count,
             plan_path=str(plan_dir),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
     finally:
         ledger.close()
 
@@ -161,7 +162,7 @@ def cmd_approve(args):
             identity_store=identity_store,
             lifecycle_ledger=lifecycle_ledger,
             publication_id=args.publication,
-            confirm_reviewed=True,
+            confirm_reviewed=args.confirm_reviewed,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -211,7 +212,7 @@ def cmd_execute(args):
             lifecycle_ledger=lifecycle_ledger,
             publication_id=args.publication,
             actor=args.actor or "system",
-            confirm_send=True,
+            confirm_send=args.confirm_send,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -270,7 +271,7 @@ def cmd_resolve_ambiguous(args):
             actor=args.actor,
             reason=args.reason,
             ledger=ledger,
-            confirm=True,
+            confirm=args.confirm,
         )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

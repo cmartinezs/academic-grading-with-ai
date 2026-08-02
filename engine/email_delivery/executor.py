@@ -15,7 +15,9 @@ from .canonical import compute_identity_projection_hash, read_json
 from .errors import (
     BatchTransportError,
     ExecuteBlockedError,
+    ExecuteError,
     IdentityDriftError,
+    LedgerError,
     NotApprovedError,
     RecipientTransportError,
     SnapshotTerminalError,
@@ -46,6 +48,9 @@ def execute_plan(
     actor: str = "system",
     confirm_send: bool = False,
 ) -> ExecuteOutcome:
+    if not confirm_send:
+        raise ExecuteError("confirm_send is required for execution.")
+
     plan_path = plan_dir / "plan.json"
     if not plan_path.exists():
         raise ExecuteBlockedError(f"Plan not found: {plan_dir}")
@@ -62,7 +67,7 @@ def execute_plan(
     if lifecycle_ledger is not None and publication_id is not None:
         try:
             check_snapshot_sendable(lifecycle_ledger, publication_id)
-        except (SnapshotTerminalError, SnapshotTerminalError) as exc:
+        except SnapshotTerminalError as exc:
             raise ExecuteBlockedError("Snapshot not sendable.") from exc
 
     if identity_store is not None:
@@ -83,7 +88,9 @@ def execute_plan(
     failed_count = 0
     ambiguous_count = 0
     skipped_count = 0
+    blocked_count = 0
     snapshot_terminal = False
+    batch_transport_error = False
 
     transport_type = "fake" if isinstance(transport, FakeTransport) else "smtp"
     batch_run_id = ledger.start_batch_run(
@@ -94,154 +101,201 @@ def execute_plan(
         actor=actor,
     )
 
-    for recipient in recipients:
-        student_id = recipient["studentId"]
-        idempotency_key = recipient["idempotencyKey"]
-        normalized_recipient = recipient["normalizedRecipient"]
-        masked_recipient = recipient["maskedRecipient"]
-        identity_projection_hash = recipient["identityProjectionHash"]
-        subject = recipient["subject"]
-        text_body = recipient["textBody"]
+    try:
+        for recipient in recipients:
+            student_id = recipient["studentId"]
+            idempotency_key = recipient["idempotencyKey"]
+            masked_recipient = recipient["maskedRecipient"]
+            identity_projection_hash = recipient["identityProjectionHash"]
+            subject = recipient["subject"]
+            text_body = recipient["textBody"]
 
-        if snapshot_terminal:
-            break
-
-        if lifecycle_ledger is not None and publication_id is not None:
-            state = lifecycle_ledger.current_state(publication_id)
-            if state in SNAPSHOT_TERMINAL_STATES:
-                snapshot_terminal = True
+            if snapshot_terminal or batch_transport_error:
+                blocked_count += 1
                 continue
 
-        existing = ledger.get_delivery_by_key(idempotency_key)
-        if existing is not None:
-            if existing.state == DeliveryState.SENT:
+            if lifecycle_ledger is not None and publication_id is not None:
+                state = lifecycle_ledger.current_state(publication_id)
+                if state in SNAPSHOT_TERMINAL_STATES:
+                    snapshot_terminal = True
+                    blocked_count += 1
+                    continue
+
+            try:
+                action, delivery_id = ledger.acquire_for_execution(
+                    plan_id=plan_id,
+                    student_id=student_id,
+                    idempotency_key=idempotency_key,
+                    masked_recipient=masked_recipient,
+                    identity_projection_hash=identity_projection_hash,
+                    client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                )
+            except LedgerError:
+                blocked_count += 1
+                continue
+            except Exception:
+                blocked_count += 1
+                continue
+
+            if action == "sent":
                 skipped_count += 1
                 continue
-            if existing.state == DeliveryState.AMBIGUOUS:
+            if action == "ambiguous":
                 ambiguous_count += 1
                 continue
-            if existing.state in (DeliveryState.FAILED_PERMANENT,):
-                failed_count += 1
+            if action in ("failedPermanent", "sending", "paused", "failedTransient", "blocked"):
+                blocked_count += 1
                 continue
-            if existing.state not in (DeliveryState.RESERVED, DeliveryState.RETRY_AUTHORIZED):
+            if action not in ("reserved", "retryAuthorized"):
+                blocked_count += 1
                 continue
 
-        try:
-            delivery_id = ledger.reserve_delivery(
-                plan_id=plan_id,
-                student_id=student_id,
-                idempotency_key=idempotency_key,
-                normalized_recipient=normalized_recipient,
-                masked_recipient=masked_recipient,
-                identity_projection_hash=identity_projection_hash,
-                client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
-            )
-        except Exception:
-            existing = ledger.get_delivery_by_key(idempotency_key)
-            if existing is not None and existing.state == DeliveryState.SENT:
-                skipped_count += 1
-                continue
-            continue
-
-        try:
-            ledger.transition_delivery(
-                delivery_id=delivery_id,
-                from_state=DeliveryState.RESERVED,
-                to_state=DeliveryState.SENDING,
-                client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
-            )
-        except Exception:
-            continue
-
-        envelope = Envelope(
-            from_address=from_address,
-            to_address=normalized_recipient,
-            reply_to=reply_to,
-        )
-
-        msg = build_email_message(
-            from_address=from_address,
-            to_address=normalized_recipient,
-            subject=subject,
-            body=text_body,
-            reply_to=reply_to,
-            client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
-        )
-
-        try:
-            receipt = transport.send(msg, envelope)
-            ledger.transition_delivery(
-                delivery_id=delivery_id,
-                from_state=DeliveryState.SENDING,
-                to_state=DeliveryState.SENT,
-                transport_code=str(receipt.response_code),
-                provider_message_id=receipt.provider_message_id,
-                client_message_id=receipt.client_message_id,
-            )
-            sent_count += 1
-        except RecipientTransportError as exc:
-            if exc.delivery_certainty == "unknown":
+            try:
                 ledger.transition_delivery(
                     delivery_id=delivery_id,
-                    from_state=DeliveryState.SENDING,
-                    to_state=DeliveryState.AMBIGUOUS,
-                    transport_code=exc.code,
-                    error_class=type(exc).__name__,
-                    delivery_certainty="unknown",
+                    from_state=DeliveryState.RESERVED,
+                    to_state=DeliveryState.SENDING,
                     client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                 )
-                ambiguous_count += 1
-            elif exc.retryability == "permanent":
-                ledger.transition_delivery(
-                    delivery_id=delivery_id,
-                    from_state=DeliveryState.SENDING,
-                    to_state=DeliveryState.FAILED_PERMANENT,
-                    transport_code=exc.code,
-                    error_class=type(exc).__name__,
-                    delivery_certainty="notSent",
-                    client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
-                )
-                failed_count += 1
-            else:
-                ledger.transition_delivery(
-                    delivery_id=delivery_id,
-                    from_state=DeliveryState.SENDING,
-                    to_state=DeliveryState.FAILED_TRANSIENT,
-                    transport_code=exc.code,
-                    error_class=type(exc).__name__,
-                    delivery_certainty="notSent",
-                    client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
-                )
-                failed_count += 1
-        except BatchTransportError as exc:
-            ledger.transition_delivery(
-                delivery_id=delivery_id,
-                from_state=DeliveryState.SENDING,
-                to_state=DeliveryState.FAILED_TRANSIENT,
-                transport_code=exc.code,
-                error_class=type(exc).__name__,
-                delivery_certainty="notSent",
+            except Exception:
+                blocked_count += 1
+                continue
+
+            envelope = Envelope(
+                from_address=from_address,
+                to_address=masked_recipient,
+                reply_to=reply_to,
+            )
+
+            msg = build_email_message(
+                from_address=from_address,
+                to_address=masked_recipient,
+                subject=subject,
+                body=text_body,
+                reply_to=reply_to,
                 client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
             )
-            failed_count += 1
-            break
 
-    if ambiguous_count > 0:
+            try:
+                receipt = transport.send(msg, envelope)
+                if receipt.accepted:
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.SENT,
+                        transport_code=str(receipt.response_code),
+                        provider_message_id=receipt.provider_message_id,
+                        client_message_id=receipt.client_message_id,
+                    )
+                    sent_count += 1
+                else:
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.FAILED_PERMANENT,
+                        transport_code=str(receipt.response_code),
+                        error_class=receipt.response_class,
+                    )
+                    failed_count += 1
+            except RecipientTransportError as exc:
+                if exc.delivery_certainty == "unknown":
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.AMBIGUOUS,
+                        transport_code=exc.code,
+                        error_class=type(exc).__name__,
+                        delivery_certainty="unknown",
+                        client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                    )
+                    ambiguous_count += 1
+                elif exc.retryability == "permanent":
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.FAILED_PERMANENT,
+                        transport_code=exc.code,
+                        error_class=type(exc).__name__,
+                        delivery_certainty="notSent",
+                        client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                    )
+                    failed_count += 1
+                else:
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.FAILED_TRANSIENT,
+                        transport_code=exc.code,
+                        error_class=type(exc).__name__,
+                        delivery_certainty="notSent",
+                        client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                    )
+                    failed_count += 1
+            except BatchTransportError as exc:
+                if exc.retryability == "transient":
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.FAILED_TRANSIENT,
+                        transport_code=exc.code,
+                        error_class=type(exc).__name__,
+                        delivery_certainty=exc.delivery_certainty,
+                        client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                    )
+                else:
+                    ledger.transition_delivery(
+                        delivery_id=delivery_id,
+                        from_state=DeliveryState.SENDING,
+                        to_state=DeliveryState.FAILED_PERMANENT,
+                        transport_code=exc.code,
+                        error_class=type(exc).__name__,
+                        delivery_certainty=exc.delivery_certainty,
+                        client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
+                    )
+                batch_transport_error = True
+                break
+            except LedgerError:
+                blocked_count += 1
+                break
+
+    except Exception:
+        blocked_count += 1
+
+    if blocked_count > 0 and sent_count == 0 and ambiguous_count == 0 and failed_count == 0:
+        outcome = ExecuteOutcome.BLOCKED
+    elif snapshot_terminal and sent_count > 0:
+        outcome = ExecuteOutcome.PARTIAL
+    elif batch_transport_error:
+        if sent_count > 0:
+            outcome = ExecuteOutcome.PARTIAL
+        else:
+            outcome = ExecuteOutcome.BLOCKED
+    elif blocked_count > 0 and ambiguous_count > 0:
         outcome = ExecuteOutcome.AMBIGUOUS
+    elif ambiguous_count > 0:
+        outcome = ExecuteOutcome.AMBIGUOUS
+    elif blocked_count > 0 and sent_count > 0:
+        outcome = ExecuteOutcome.PARTIAL
     elif failed_count > 0 and sent_count > 0:
         outcome = ExecuteOutcome.PARTIAL
     elif failed_count > 0 and sent_count == 0:
         outcome = ExecuteOutcome.PARTIAL
+    elif blocked_count > 0:
+        outcome = ExecuteOutcome.BLOCKED
     else:
         outcome = ExecuteOutcome.COMPLETE
 
-    ledger.complete_batch_run(
-        batch_run_id=batch_run_id,
-        sent_count=sent_count,
-        failed_count=failed_count,
-        ambiguous_count=ambiguous_count,
-        skipped_count=skipped_count,
-        outcome=outcome.value,
-    )
+    try:
+        ledger.complete_batch_run(
+            batch_run_id=batch_run_id,
+            sent_count=sent_count,
+            failed_count=failed_count,
+            ambiguous_count=ambiguous_count,
+            skipped_count=skipped_count,
+            outcome=outcome.value,
+            blocked_count=blocked_count,
+        )
+    except LedgerError:
+        pass
 
     return outcome

@@ -13,6 +13,7 @@ from .canonical import compute_preview_hash, read_json
 from .errors import (
     ApprovalMismatchError,
     AlreadyApprovedError,
+    ApprovalError,
     IdentityDriftError,
     NotApprovedError,
     PlanTamperedError,
@@ -37,6 +38,9 @@ def approve_plan(
     confirm_reviewed: bool = False,
     clock=None,
 ) -> ApprovalRecord:
+    if not confirm_reviewed:
+        raise ApprovalError("confirm_reviewed is required for approval.")
+
     if not actor or not actor.strip():
         raise ApprovalMismatchError("actor is required for approval.")
     if "@" in actor:

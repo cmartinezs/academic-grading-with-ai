@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import smtplib
+import ssl
 import uuid
 from email.message import EmailMessage
 from typing import Optional
@@ -18,7 +19,7 @@ from ..errors import (
     RecipientTransportError,
     TransportError,
 )
-from ..models import Envelope, TransportConfig, TransportReceipt
+from ..models import Envelope, TlsMode, TransportConfig, TransportReceipt
 from .base import EmailTransport
 
 SMTP_PASSWORD_ENV = "ACADGRAD_SMTP_PASSWORD"
@@ -29,10 +30,34 @@ class SMTPTransport(EmailTransport):
         self.timeout = timeout
 
     def preflight(self, config: TransportConfig) -> None:
-        password = os.environ.get(SMTP_PASSWORD_ENV)
+        if not config.host:
+            raise BatchTransportError(
+                "SMTP host not configured",
+                scope="batch",
+                retryability="permanent",
+                delivery_certainty="notSent",
+                code="smtp-host-missing",
+            )
+        if not config.port:
+            raise BatchTransportError(
+                "SMTP port not configured",
+                scope="batch",
+                retryability="permanent",
+                delivery_certainty="notSent",
+                code="smtp-port-missing",
+            )
+        if not config.username:
+            raise BatchTransportError(
+                "SMTP username not configured",
+                scope="batch",
+                retryability="permanent",
+                delivery_certainty="notSent",
+                code="smtp-username-missing",
+            )
+        password = config.password or os.environ.get(SMTP_PASSWORD_ENV)
         if not password:
             raise BatchTransportError(
-                "SMTP password not set in environment",
+                "SMTP password not set",
                 scope="batch",
                 retryability="permanent",
                 delivery_certainty="notSent",
@@ -40,38 +65,60 @@ class SMTPTransport(EmailTransport):
             )
 
     def send(self, message: EmailMessage, envelope: Envelope) -> TransportReceipt:
-        password = os.environ.get(SMTP_PASSWORD_ENV, "")
         client_message_id = message.get("Message-ID", f"<{uuid.uuid4()}@localhost>")
 
         try:
-            if envelope.from_address and '\r' in envelope.from_address or '\n' in envelope.from_address:
+            if envelope.from_address and ('\r' in envelope.from_address or '\n' in envelope.from_address):
                 raise CRLFInjectionError("CRLF in from address")
             if envelope.to_address and ('\r' in envelope.to_address or '\n' in envelope.to_address):
                 raise CRLFInjectionError("CRLF in to address")
 
-            with smtplib.SMTP(
-                os.environ.get("ACADGRAD_SMTP_HOST", "localhost"),
-                int(os.environ.get("ACADGRAD_SMTP_PORT", "587")),
-                timeout=self.timeout,
-            ) as smtp:
-                smtp.ehlo()
-                if smtp.has_extn("starttls"):
-                    smtp.starttls()
+            password = os.environ.get(SMTP_PASSWORD_ENV, "")
+            host = os.environ.get("ACADGRAD_SMTP_HOST", "localhost")
+            port = int(os.environ.get("ACADGRAD_SMTP_PORT", "587"))
+            username = os.environ.get("ACADGRAD_SMTP_USERNAME", "")
+            tls_mode_str = os.environ.get("ACADGRAD_SMTP_TLS_MODE", "starttls")
+            tls_mode = TlsMode(tls_mode_str) if tls_mode_str in ("starttls", "implicitTls") else TlsMode.STARTTLS
+
+            if tls_mode == TlsMode.IMPLICIT_TLS:
+                ctx = ssl.create_default_context()
+                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=self.timeout) as smtp:
+                    smtp.login(username, password)
+                    refused = smtp.send_message(message, from_addr=envelope.from_address, to_addrs=[envelope.to_address])
+                    if refused:
+                        recipient, code = next(iter(refused.items()))
+                        raise RecipientTransportError(
+                            f"Recipient refused: {code}",
+                            scope="recipient",
+                            retryability="permanent" if 500 <= code[0] < 600 else "transient",
+                            delivery_certainty="notSent",
+                            code=f"smtp-{code[0]}",
+                        )
+            else:
+                with smtplib.SMTP(host, port, timeout=self.timeout) as smtp:
                     smtp.ehlo()
-                smtp.login(
-                    os.environ.get("ACADGRAD_SMTP_USERNAME", ""),
-                    password,
-                )
-                refused = smtp.send_message(message, from_addr=envelope.from_address, to_addrs=[envelope.to_address])
-                if refused:
-                    recipient, code = next(iter(refused.items()))
-                    raise RecipientTransportError(
-                        f"Recipient refused: {code}",
-                        scope="recipient",
-                        retryability="permanent" if 500 <= code[0] < 600 else "transient",
-                        delivery_certainty="notSent",
-                        code=f"smtp-{code[0]}",
-                    )
+                    if not smtp.has_extn("starttls"):
+                        raise BatchTransportError(
+                            "Server does not support STARTTLS — refusing to send in plaintext",
+                            scope="batch",
+                            retryability="permanent",
+                            delivery_certainty="notSent",
+                            code="smtp-starttls-unavailable",
+                        )
+                    ctx = ssl.create_default_context()
+                    smtp.starttls(context=ctx)
+                    smtp.ehlo()
+                    smtp.login(username, password)
+                    refused = smtp.send_message(message, from_addr=envelope.from_address, to_addrs=[envelope.to_address])
+                    if refused:
+                        recipient, code = next(iter(refused.items()))
+                        raise RecipientTransportError(
+                            f"Recipient refused: {code}",
+                            scope="recipient",
+                            retryability="permanent" if 500 <= code[0] < 600 else "transient",
+                            delivery_certainty="notSent",
+                            code=f"smtp-{code[0]}",
+                        )
 
             return TransportReceipt(
                 accepted=True,

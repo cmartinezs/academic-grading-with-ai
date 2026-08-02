@@ -125,7 +125,6 @@ class StudentEmailView:
 @dataclass(frozen=True)
 class PlanRecipient:
     student_id: str
-    normalized_recipient: str
     masked_recipient: str
     identity_projection_hash: str
     subject: str
@@ -136,7 +135,6 @@ class PlanRecipient:
     def to_dict(self) -> dict:
         return {
             "studentId": self.student_id,
-            "normalizedRecipient": self.normalized_recipient,
             "maskedRecipient": self.masked_recipient,
             "identityProjectionHash": self.identity_projection_hash,
             "subject": self.subject,
@@ -229,11 +227,18 @@ class Envelope:
     reply_to: Optional[str] = None
 
 
+class TlsMode(Enum):
+    STARTTLS = "starttls"
+    IMPLICIT_TLS = "implicitTls"
+
+
 @dataclass(frozen=True)
 class TransportConfig:
     host: str
     port: int
     username: str
+    password: str = ""
+    tls_mode: TlsMode = TlsMode.STARTTLS
     use_tls: bool = True
     timeout: float = 30.0
 
@@ -244,7 +249,6 @@ class DeliveryRecord:
     plan_id: str
     student_id: str
     idempotency_key: str
-    normalized_recipient: str
     masked_recipient: str
     identity_projection_hash: str
     state: DeliveryState
@@ -271,3 +275,12 @@ class BatchRunSummary:
     skipped_count: int
     outcome: Optional[str]
     actor: str
+
+
+@dataclass(frozen=True)
+class VerifiedEmailPlan:
+    plan_id: str
+    preview_hash: str
+    recipient_count: int
+    plan_dict: dict
+    manifest: dict

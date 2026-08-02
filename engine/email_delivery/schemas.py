@@ -61,14 +61,13 @@ PLAN_SCHEMA_V1 = {
             "items": {
                 "type": "object",
                 "required": [
-                    "studentId", "normalizedRecipient", "maskedRecipient",
+                    "studentId", "maskedRecipient",
                     "identityProjectionHash", "subject", "textBody",
                     "itemHash", "idempotencyKey"
                 ],
                 "additionalProperties": False,
                 "properties": {
                     "studentId": {"type": "string"},
-                    "normalizedRecipient": {"type": "string"},
                     "maskedRecipient": {"type": "string"},
                     "identityProjectionHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                     "subject": {"type": "string", "minLength": 1},
