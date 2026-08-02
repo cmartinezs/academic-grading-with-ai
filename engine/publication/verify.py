@@ -151,7 +151,13 @@ def gate_semantic(report: VerifyReport, root: Path, files: dict[str, Path]) -> N
         )
 
     weight_keys = set(policy.get("evaluationWeights") or {})
-    if weight_keys != set(assessment_ids):
+    if policy.get("mode") == "grade-policy-effective":
+        for field in ("policyId", "policyVersion", "engineVersion", "policyHash"):
+            if not policy.get(field):
+                report.add("G5-semantic", f"grade-policy-effective policy missing {field!r}.")
+        if not isinstance(policy.get("policy"), dict):
+            report.add("G5-semantic", "grade-policy-effective policy missing the full policy document.")
+    elif weight_keys != set(assessment_ids):
         report.add(
             "G5-semantic",
             f"policy.evaluationWeights keys ({sorted(weight_keys)}) != assessments ids ({sorted(assessment_ids)}).",
@@ -183,6 +189,32 @@ def gate_semantic(report: VerifyReport, root: Path, files: dict[str, Path]) -> N
         report.add("G5-semantic", f"Invalid supersedesPublicationId: {supersedes}")
     if corrects and not corrects.startswith("pub_"):
         report.add("G5-semantic", f"Invalid correctsPublicationId: {corrects}")
+
+    # C2 cross-references: outcomes/traces must reference known subjects and
+    # the C2 policy id, and must be consistent with each other.
+    outcomes = _json_payload(files.get("canonical/outcomes.json", root / "missing"))
+    traces = _json_payload(files.get("canonical/traces.json", root / "missing"))
+    if policy.get("mode") == "grade-policy-effective":
+        for label, doc in (("outcomes", outcomes), ("traces", traces)):
+            if doc is None:
+                report.add("G5-semantic", f"grade-policy-effective snapshot is missing canonical/{label}.json.")
+        if isinstance(outcomes, dict):
+            outcome_ids = [o.get("subjectId") for o in outcomes.get("subjectOutcomes", [])]
+            for sid in outcome_ids:
+                if sid not in subject_set:
+                    report.add("G5-semantic", f"Orphan outcome: {sid} has no subject.")
+            if duplicates(outcome_ids):
+                report.add("G5-semantic", f"Duplicate outcome subjectId: {duplicates(outcome_ids)}")
+        if isinstance(traces, dict):
+            trace_ids = [t.get("subjectId") for t in traces.get("subjectTraces", [])]
+            for sid in trace_ids:
+                if sid not in subject_set:
+                    report.add("G5-semantic", f"Orphan trace: {sid} has no subject.")
+            if isinstance(outcomes, dict) and sorted(trace_ids) != sorted(outcome_ids):
+                report.add(
+                    "G5-semantic",
+                    "traces.subjectTraces subjects do not match outcomes.subjectOutcomes subjects.",
+                )
 
 
 def _iter_abs_path_values(payload) -> list[str]:

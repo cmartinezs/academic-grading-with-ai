@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:grade-policy:outcomes:1.0.0",
+  "title": "C2 Calculation Outcomes",
+  "description": "Stable result surface consumed by dashboards and exporters. Contains no PII.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "subjectOutcomes"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "subjectOutcomes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/outcome" }
+    }
+  },
+  "$defs": {
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subjectId",
+        "outcomeId",
+        "policyId",
+        "status",
+        "resultStageId"
+      ],
+      "properties": {
+        "subjectId": { "type": "string", "minLength": 1 },
+        "outcomeId": {
+          "type": "string",
+          "pattern": "^out_[a-f0-9]{16}$"
+        },
+        "policyId": { "type": "string", "minLength": 1 },
+        "status": {
+          "enum": ["finalized", "pending", "notApplicable", "error"]
+        },
+        "value": { "$ref": "#/$defs/academicValue" },
+        "resultStageId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "academicValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+        "unit": {
+          "enum": ["percent", "points", "grade", "scalar", "level"]
+        }
+      }
+    }
+  }
+}

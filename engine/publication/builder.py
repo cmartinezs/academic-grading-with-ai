@@ -62,6 +62,7 @@ class BuildContext:
     publication_id: str
     clock: Clock = field(default_factory=Clock)
     legacy_source: Optional[Path] = None
+    grade_policy_source: Optional[Path] = None
     env: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -73,6 +74,7 @@ class BuildContext:
         env: Optional[Mapping[str, str]] = None,
         clock: Optional[Clock] = None,
         legacy_source: Optional[Path] = None,
+        grade_policy_source: Optional[Path] = None,
     ) -> "BuildContext":
         env = dict(os.environ) if env is None else dict(env)
         runtime = resolve_runtime_roots(Path(workspace_root), env=env)
@@ -88,6 +90,7 @@ class BuildContext:
             publication_id=publication_id,
             clock=clock or Clock(env=env),
             legacy_source=Path(legacy_source) if legacy_source else None,
+            grade_policy_source=Path(grade_policy_source) if grade_policy_source else None,
             env=env,
         )
 
@@ -416,6 +419,16 @@ def _build_draft_locked(
 
     adapter, canonical, provenance = compute_plan_payloads(ctx)
     check_filesystem_precondition(ctx)
+
+    if ctx.grade_policy_source is not None:
+        try:
+            from grade_policy.snapshot import build_c2_payloads, load_policy_document
+        except ImportError:  # engine/ imported as a package (engine.publication)
+            from ..grade_policy.snapshot import build_c2_payloads, load_policy_document
+
+        policy_document = load_policy_document(ctx.grade_policy_source)
+        c2_payloads = build_c2_payloads(ctx.section_id, canonical, policy_document)
+        canonical = {**canonical, **c2_payloads}
 
     staging = ctx.staging_dir()
     if not dry_run and staging.exists():
