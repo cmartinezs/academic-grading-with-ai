@@ -3,6 +3,10 @@
 These functions convert engine results into the plain, schema-shaped dicts
 that are later canonically serialized by ``jsonutil`` and written to
 ``canonical/outcomes.json`` and ``canonical/traces.json``.
+
+Documents are emitted with ``schemaVersion``/``traceSchemaVersion`` ``1.1.0``:
+the 1.0.0 shape is preserved and extended additively with typed stage states
+and structured missing decisions (compatible minor version).
 """
 
 from __future__ import annotations
@@ -12,6 +16,9 @@ from typing import Mapping, Optional
 from .decimal import decimal_str
 from .models import AcademicValue, EngineOutcome
 from .version import __version__
+
+OUTCOMES_SCHEMA_VERSION = "1.1.0"
+TRACES_SCHEMA_VERSION = "1.1.0"
 
 
 def value_dict(value: Optional[AcademicValue]) -> Optional[dict]:
@@ -28,6 +35,8 @@ def outcome_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> di
         "outcomeId": outcome_id(section_id, outcome.subject_id, outcome.policy),
         "policyId": outcome.policy.policy_id,
         "status": outcome.status,
+        "resultState": outcome.state,
+        "finalizable": outcome.finalizable,
         "resultStageId": outcome.result_stage_id,
     }
     if outcome.value is not None:
@@ -44,11 +53,14 @@ def trace_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> dict
             "stageId": ev.stage.id,
             "phase": ev.stage.phase,
             "operator": ev.stage.operator,
+            "state": ev.state,
             "applied": ev.applied,
         }
         stage_payload["inputs"] = list(ev.normalized_inputs)
         if ev.output is not None:
             stage_payload["output"] = value_dict(ev.output)
+        if ev.missing_decisions:
+            stage_payload["missingDecisions"] = [md.to_dict() for md in ev.missing_decisions]
         if ev.condition_decision is not None:
             stage_payload["condition"] = ev.condition_decision
         if ev.decisions:
@@ -61,6 +73,7 @@ def trace_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> dict
         "subjectId": outcome.subject_id,
         "outcomeId": outcome_id(section_id, outcome.subject_id, outcome.policy),
         "policyId": outcome.policy.policy_id,
+        "resultState": outcome.state,
         "stages": stages,
     }
 
@@ -71,7 +84,7 @@ def traces_document(
     section_id: Optional[str] = None,
 ) -> dict:
     return {
-        "traceSchemaVersion": "1.0.0",
+        "traceSchemaVersion": TRACES_SCHEMA_VERSION,
         "policy": getattr(policy, "raw", policy),
         "subjectTraces": [trace_dict(o, section_id) for o in outcomes.values()],
     }
@@ -81,7 +94,7 @@ def outcomes_document(
     outcomes: Mapping[str, EngineOutcome], section_id: Optional[str] = None
 ) -> dict:
     return {
-        "schemaVersion": "1.0.0",
+        "schemaVersion": OUTCOMES_SCHEMA_VERSION,
         "subjectOutcomes": [outcome_dict(o, section_id) for o in outcomes.values()],
     }
 

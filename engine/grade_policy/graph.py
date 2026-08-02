@@ -10,7 +10,9 @@ Rules:
 - cycles raise ``CycleError``;
 - unknown refs (neither an assessment nor an earlier stage) raise
   ``StageReferenceError``;
-- every stage must be reachable from the result stage (dead code is rejected).
+- every stage must be reachable from the result stage (dead code is rejected);
+- condition references (``condition.params.ref``) are first-class edges and
+  participate in cycle detection, reachability and ordering.
 """
 
 from __future__ import annotations
@@ -31,16 +33,28 @@ class Plan:
         return self.order
 
 
+def condition_refs(stage: StageSpec) -> Sequence[str]:
+    """Refs a stage condition reads via ``condition.params.ref``.
+
+    Every V1 condition declares its reference in ``params.ref``; those refs are
+    real DAG dependencies and must participate in cycle detection, reachability
+    and topological ordering exactly like input refs.
+    """
+    condition = stage.condition or {}
+    params = condition.get("params") or {}
+    ref = params.get("ref")
+    if ref is not None:
+        return (ref,)
+    return ()
+
+
 def _references(stage: StageSpec) -> Sequence[str]:
     refs = [inp.ref for inp in stage.inputs]
-    condition = stage.condition or {}
-    ref = condition.get("ref")
-    if ref is not None:
-        refs.append(ref)
+    refs.extend(condition_refs(stage))
     return refs
 
 
-def plan(policy: Policy) -> Plan:
+def _build_graph(policy: Policy) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     stage_ids = set(policy.stages.keys())
     assessment_ids = set(policy.assessments)
 
@@ -56,6 +70,13 @@ def plan(policy: Policy) -> Plan:
                 raise StageReferenceError(
                     f"stages[{stage.id}]: ref {ref!r} is neither a stage nor an assessment."
                 )
+    return predecessors, successors
+
+
+def topological_order(policy: Policy) -> Sequence[str]:
+    """Deterministic topo order (cycle + unknown refs only). No result checks."""
+    stage_ids = set(policy.stages.keys())
+    predecessors, successors = _build_graph(policy)
 
     # Cycle detection via DFS.
     WHITE, GRAY, BLACK = 0, 1, 2
@@ -114,6 +135,14 @@ def plan(policy: Policy) -> Plan:
             if color[sid] == WHITE and find(sid):
                 break
         raise CycleError(cycle_holder)
+
+    return order
+
+
+def plan(policy: Policy) -> Plan:
+    stage_ids = set(policy.stages.keys())
+    predecessors, _ = _build_graph(policy)
+    order = topological_order(policy)
 
     # Dead-code check: every stage must be reachable from result_stage_id.
     if policy.result_stage_id not in stage_ids:

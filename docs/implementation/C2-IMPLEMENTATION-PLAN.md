@@ -1,7 +1,8 @@
 # C2 — Grade Policy Engine (plan de implementación)
 
-Estado: en implementación en `feat/c2-grade-policy-engine`.
-Base: `master` (contiene C1 `cdf452222b8ef9cf72dc4ff70e112cfb553d606e`).
+Estado: implementado y verificado en `feat/c2-grade-policy-engine` (engine
+`0.2.0`; outcomes/traces `1.1.0`). Base: `master` (contiene C1
+`cdf452222b8ef9cf72dc4ff70e112cfb553d606e`).
 
 Este corte implementa exclusivamente C2 del roadmap
 [`04-roadmap.md`](../architecture/04-roadmap.md). C3–C7 quedan fuera de alcance.
@@ -77,6 +78,15 @@ publicación (los defaults efectivos se materializan en la policy).
 - `percent`, `points`, `grade`, `scalar`, `level`.
 - Todo valor procesado conoce su unidad; un operador rechaza unidades incompatibles.
 - Conversiones solo vía `piecewiseLinearScale` explícito. Sin conversiones implícitas.
+- `assessmentUnits` (opcional en el documento de policy) declara la unidad por
+  assessment. Habilita:
+  - inferencia estática de unidades (`propagate_units`, en orden topológico);
+  - backfill de `zero` con la unidad esperada del stage (nunca una unidad global);
+  - fail-closed si una unidad declarada difiere de la unidad en runtime
+    (`UnitMismatchError`).
+- La inferencia estática nunca adivina: si una unidad no está declarada, el stage
+  se resuelve en runtime. El validador solo reporta hallazgos sobre unidades
+  conocidas estáticamente (mezcla de unidades declaradas en un stage homogéneo).
 
 ## 7. Catálogo exacto de operadores V1
 
@@ -84,23 +94,29 @@ publicación (los defaults efectivos se materializan en la policy).
 |---|---|---|---|---|
 | `weightedAverage` | normalization, aggregation | misma unidad | misma | fail, excludeAndRenormalize, zero, minimumOutput, pending, notApplicable |
 | `sum` | normalization, aggregation | misma unidad | misma | fail, zero, minimumOutput, pending, notApplicable |
-| `piecewiseLinearScale` | conversion | cualquier numérica | declarada | fail, zero, pending, notApplicable |
+| `piecewiseLinearScale` | conversion | cualquier numérica | `outputUnit` (explícito, requerido) | fail, zero, pending, notApplicable |
 | `additiveBonus` | adjustment | target y source compatibles | target | fail, pending, notApplicable |
 | `replaceLowestInput` | adjustment | target (weightedAverage) | target | fail, pending, notApplicable |
-| `cap` | adjustment, finalization | target | target | fail, zero, pending, notApplicable |
-| `floor` | adjustment, finalization | target | target | fail, zero, pending, notApplicable |
+| `cap` | adjustment, finalization | target | target | fail, zero, minimumOutput, pending, notApplicable |
+| `floor` | adjustment, finalization | target | target | fail, zero, minimumOutput, pending, notApplicable |
 | `round` | finalization | target | target (conserva) | fail, pending, notApplicable |
+
+Matriz exacta implementada y probada (`test_missing_policies.py`); cualquier
+combinación fuera de la tabla es error de validación semántica.
 
 ## 8. Catálogo exacto de condiciones V1
 
-| Condición | Fuente | Semántica |
+Cada condición va en `stage.condition` con `{"kind", "params"}`; la referencia
+se declara en `params.ref` y puede ser un assessmentId o un stageId.
+
+| Condición | Fuente (`params.ref`) | Semántica |
 |---|---|---|
 | `statusEquals` | assessmentId | `status == valor` |
 | `levelAtLeast` | assessmentId (unit level) | `level >= umbral` |
 | `assessmentPresent` | assessmentId | el input está presente |
 | `assessmentMissing` | assessmentId | el input está ausente |
-| `scoreAtLeast` | assessmentId | `value >= umbral` |
-| `scoreBelow` | assessmentId | `value < umbral` |
+| `scoreAtLeast` | assessmentId o stageId | `value >= umbral` |
+| `scoreBelow` | assessmentId o stageId | `value < umbral` |
 
 Cada condición devuelve `(bool, reason)` y aparece en el trace. Fallan cerrado si falta
 información requerida. No hay AND/OR arbitrarios en V1.
@@ -118,39 +134,68 @@ puede depender de una fase posterior. La salida final la declara `resultStageId`
 
 - `stageId` únicos; referencias a assessments y a stageIds existentes.
 - Sin ciclos, sin self-references, sin referencias a fases posteriores.
-- Planificador determinista: nodos = stages, aristas = dependencias de input; orden
-  topológico con desempate lexicográfico por `stageId` para grafos equivalentes.
+- Planificador determinista: nodos = stages; aristas = dependencias de input **y**
+  referencias de condición (`condition.params.ref`), ambas de primera clase. La
+  detección de ciclos y el orden topológico (`topological_order`) incluyen las
+  aristas de condición; `plan` añade además el stage de resultado y la detección
+  de código muerto (stages inalcanzables o `resultStageId` no finalizable).
+- Orden topológico con desempate lexicográfico por `stageId` para grafos
+  equivalentes.
 - Detección de ciclos con reporte sanitizado (stageIds lógicos, sin datos académicos).
+- Una referencia de condición inexistente se rechaza en validación.
 
-## 11. Missing policies
+## 11. Estados tipados de stage
+
+| Estado | Significado | `resultState` |
+|---|---|---|
+| `value` | produce valor | `finalized` |
+| `missing` | input requerido ausente | según política |
+| `pending` | sin input presente; no finalizable | `pending` |
+| `notApplicable` | operación no aplica | `notApplicable` |
+| `skippedCondition` | condición no satisfecha; stage no ejecutado | `pending` (no finalizable) |
+
+- La propagación hacia abajo lleva el motivo (p. ej. `pending` por `missing`,
+  `pending` por `notApplicable` upstream), de modo que el trace es explicable.
+- `finalizable` es `true` solo si el stage de resultado está en `value`.
+
+## 12. Missing policies
 
 Semántica por operador (tabla en §7). Reglas globales:
 
-- `pending` produce outcome no finalizable (`status: pending`, `finalizable: false`).
+- `pending` produce outcome no finalizable (`resultState: pending`,
+  `finalizable: false`).
 - `notApplicable` no equivale a cero; produce `notApplicable` en el trace.
-- `excludeAndRenormalize` solo aplica en `weightedAverage` (renormalización de pesos).
-- `minimumOutput` requiere escala o valor mínimo resoluble; sin `minimum` en params
-  falla la validación.
-- Toda decisión de missing aparece en el trace.
+- `excludeAndRenormalize` solo aplica en `weightedAverage` (renormalización de
+  pesos con decisión visible: `originalWeight`, `effectiveWeight`,
+  `totalBefore`); con cero inputs presentes queda `pending`.
+- `zero` rellena con cero en la unidad esperada del stage (unidad declarada o
+  común inferida); con todos los inputs ausentes y unidad no declarada → error
+  tipado (`UnitMismatchError`).
+- `minimumOutput` requiere `params.minimum {value, unit}`; sin `minimum` en
+  params falla la validación.
+- Toda decisión de missing aparece en el trace (`missingDecisions`).
 
-## 12. Contrato del trace
+## 13. Contrato del trace
 
-Ver `C2-GRADE-POLICY-CONTRACT.md` §7. El trace por estudiante declara
-`traceSchemaVersion`, `policyId`, `policyVersion`, `policyHash`, `engineVersion`,
-`subjectId` opaco, `resultStageId` y `stages[]` con decisiones y warnings. Una regla no
-aplicada también aparece con motivo. Sin RUT, nombre, email, rutas privadas, evidence
-content ni secretos.
+Ver `C2-GRADE-POLICY-CONTRACT.md` §9. El trace por estudiante declara
+`traceSchemaVersion` (1.1.0), `policyId`, `policyVersion`, `policyHash`,
+`engineVersion`, `subjectId` opaco, `resultStageId` y `stages[]` con estado
+tipado (`state`), `missingDecisions` estructuradas y decisiones/warnings. Una
+regla no aplicada aparece con `state: "skippedCondition"` y motivo. Sin RUT,
+nombre, email, rutas privadas, evidence content ni secretos.
 
-## 13. Política de schema versioning
+## 14. Política de schema versioning
 
-- Contratos C2 propios: `policy` (schema 1.0.0), `outcomes` (1.0.0), `traces` (1.0.0).
+- Contratos C2 propios: `policy` (schema 1.0.0), `outcomes` (1.0.0 y 1.1.0),
+  `traces` (1.0.0 y 1.1.0). El motor emite `1.1.0` por defecto (aditivo sobre
+  1.0.0).
 - El verificador selecciona schema por versión declarada (`schemaVersion`) y por `mode`
   para `canonical/policy.json` (`legacy-effective` → schema C1; `grade-policy-effective`
   → schema C2).
 - Major desconocida falla cerrado; minor compatible sigue reglas explícitas (additivo).
 - No existe fallback silencioso al schema más reciente; las migraciones son explícitas.
 
-## 14. Integración con Publication Snapshot
+## 15. Integración con Publication Snapshot
 
 - `build --grade-policy <file>`: camino C2.
 - Flujo: parse legacy/reviewed results → canonical observed inputs → load policy exacta
@@ -164,7 +209,7 @@ content ni secretos.
   verificándose sin cambios.
 - `--replace-legacy-aliases` y `compatibility` no se ven afectados.
 
-## 15. Compatibilidad legacy-effective
+## 16. Compatibilidad legacy-effective
 
 - El camino legacy (sin `--grade-policy`) es byte-compatible.
 - Los schemas C1 no cambian; el verifier extiende (aditivo) la selección de schema y el
@@ -174,13 +219,13 @@ content ni secretos.
   `--grade-policy` explícito y si la semántica se demuestra; una migración incompleta se
   detiene y reporta la regla no representable.
 
-## 16. Estrategia de fixtures
+## 17. Estrategia de fixtures
 
 Todos los fixtures son sintéticos (ver §18 del contrato y la sección de conformidad
 FPY1101). Cero PII; identificadores ficticios. Se crean en
 `engine/grade_policy/fixtures/` y se referencian desde los tests.
 
-## 17. Estrategia de conformidad FPY1101
+## 18. Estrategia de conformidad FPY1101
 
 - Se usan únicamente reglas verificadas en este repositorio:
   `weighted_average` y `percent_to_grade` de `export-publication-data.py` y los defaults
@@ -192,7 +237,7 @@ FPY1101). Cero PII; identificadores ficticios. Se crean en
 - Fixtures con valores de referencia calculados por fórmula; una diferencia de nota,
   score, cap o redondeo bloquea C2.
 
-## 18. Failure model
+## 19. Failure model
 
 | Fallo | Resultado | Recuperación |
 |---|---|---|
@@ -209,14 +254,14 @@ FPY1101). Cero PII; identificadores ficticios. Se crean en
 | outcome/trace tampered | verify falla | crear corrección |
 | snapshot legacy C1 | sigue verificándose | — |
 
-## 19. Riesgos
+## 20. Riesgos
 
 - Modificación aditiva del verifier C1: mitigado con tests de regresión C1 completos.
 - Semántica PCT/EvG documentada de forma parcial en la referencia: los fixtures se
   limitan a lo verificado y marcan los supuestos para confirmación humana.
 - Complejidad del DAG/Decimal: propiedad de determinismo y golden tests.
 
-## 20. Fuera de alcance
+## 21. Fuera de alcance
 
 - C3 Email.
 - C4 Portal.

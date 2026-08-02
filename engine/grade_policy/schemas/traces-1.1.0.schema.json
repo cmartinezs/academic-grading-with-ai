@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:grade-policy:traces:1.1.0",
+  "title": "C2 Calculation Traces",
+  "description": "Per-stage calculation audit trail for one evaluation run. Deterministic and replayable; contains no PII. 1.1.0 adds typed stage states, structured missingDecisions and per-input states/reasons.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["traceSchemaVersion", "policy", "subjectTraces"],
+  "properties": {
+    "traceSchemaVersion": { "const": "1.1.0" },
+    "policy": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "subjectTraces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/subjectTrace" }
+    }
+  },
+  "$defs": {
+    "subjectTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subjectId", "outcomeId", "policyId", "stages"],
+      "properties": {
+        "subjectId": { "type": "string", "minLength": 1 },
+        "outcomeId": {
+          "type": "string",
+          "pattern": "^out_[a-f0-9]{16}$"
+        },
+        "policyId": { "type": "string", "minLength": 1 },
+        "resultState": {
+          "enum": ["value", "missing", "pending", "notApplicable", "skippedCondition"]
+        },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stageTrace" }
+        }
+      }
+    },
+    "stageTrace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stageId", "phase", "operator", "state", "applied"],
+      "properties": {
+        "stageId": { "type": "string", "minLength": 1 },
+        "phase": {
+          "enum": ["normalization", "aggregation", "adjustment", "conversion", "finalization"]
+        },
+        "operator": { "type": "string", "minLength": 1 },
+        "state": {
+          "enum": ["value", "missing", "pending", "notApplicable", "skippedCondition"]
+        },
+        "applied": { "type": "boolean" },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref", "value", "state"],
+            "properties": {
+              "ref": { "type": "string" },
+              "value": {
+                "anyOf": [
+                  { "$ref": "#/$defs/academicValue" },
+                  { "type": "null" }
+                ]
+              },
+              "state": {
+                "enum": ["value", "missing", "pending", "notApplicable", "skippedCondition"]
+              },
+              "reason": { "type": "string" },
+              "weight": { "type": "string" }
+            }
+          }
+        },
+        "missingDecisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/missingDecision" }
+        },
+        "condition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "satisfied", "reason"],
+          "properties": {
+            "kind": { "type": "string" },
+            "satisfied": { "type": "boolean" },
+            "reason": { "type": "string" }
+          }
+        },
+        "output": { "$ref": "#/$defs/academicValue" },
+        "decisions": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "missingDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "reason", "policy", "resultingState"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" },
+        "policy": { "type": "string", "minLength": 1 },
+        "originalWeight": { "type": "string" },
+        "effectiveWeight": { "type": "string" },
+        "totalBefore": { "type": "string" },
+        "resultingState": {
+          "enum": ["value", "missing", "pending", "notApplicable", "excluded"]
+        }
+      }
+    },
+    "academicValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+        "unit": {
+          "enum": ["percent", "points", "grade", "scalar", "level"]
+        }
+      }
+    }
+  }
+}

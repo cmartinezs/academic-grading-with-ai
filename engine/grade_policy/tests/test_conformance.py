@@ -190,10 +190,22 @@ class SemanticGateTest(unittest.TestCase):
             stages={
                 "scale1": {"id": "scale1", "phase": "conversion", "operator": "piecewiseLinearScale",
                            "inputs": [{"ref": "presentation"}],
-                           "params": {"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}},
+                           "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}},
                 "scale2": {"id": "scale2", "phase": "conversion", "operator": "piecewiseLinearScale",
                            "inputs": [{"ref": "scale1"}],
-                           "params": {"pairs": [{"from": None, "to": 1}, {"from": 4, "to": 7}]}},
+                           "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 4, "to": 7}]}},
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_piecewise_output_unit_missing_rejected(self) -> None:
+        doc = policy(
+            resultStageId="scale",
+            stages={
+                "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
+                          "inputs": [{"ref": "presentation"}],
+                          "params": {"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}}
             }
         )
         with self.assertRaises(SemanticValidationError):
@@ -255,7 +267,7 @@ class OperatorConformanceTest(unittest.TestCase):
             stages={
                 "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
                           "inputs": [{"ref": "presentation"}],
-                          "params": {"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
+                          "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
             }
         )
         out = calculate(load_policy(doc), inputs_for(presentation=90), {"subjectId": "S"})
@@ -268,7 +280,7 @@ class OperatorConformanceTest(unittest.TestCase):
             stages={
                 "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
                           "inputs": [{"ref": "presentation"}],
-                          "params": {"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
+                          "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
             }
         )
         out = calculate(load_policy(doc), inputs_for(presentation=20), {"subjectId": "S"})

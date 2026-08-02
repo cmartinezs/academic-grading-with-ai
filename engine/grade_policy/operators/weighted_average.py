@@ -1,31 +1,113 @@
-"""weightedAverage: sum of weight*value over resolved, present inputs."""
+"""weightedAverage: sum of weight*value over resolved inputs.
+
+Missing-policy behavior (fail / zero / excludeAndRenormalize / minimumOutput /
+pending / notApplicable) is applied per input. ``zero`` backfills with a zero in
+the stage's expected unit; ``excludeAndRenormalize`` drops the absent inputs and
+renormalizes the remaining weights; ``minimumOutput`` emits params.minimum;
+``pending``/``notApplicable`` produce a non-value, non-finalizable state.
+"""
 
 from __future__ import annotations
 
-from ..decimal import DZERO, WEIGHT_SUM_TOLERANCE, Decimal, run
-from ..models import AcademicValue, EvalResult, StageSpec
-from .base import OperatorSpec, require_same_unit, resolve_present_values
+from typing import Mapping, Optional
+
+from ..decimal import DZERO, WEIGHT_SUM_TOLERANCE, Decimal, decimal_str, run
+from ..models import AcademicValue, EvalResult, MissingDecision, ResolvedInput, StageSpec
+from .base import (
+    VALUE,
+    OperatorSpec,
+    common_output_unit,
+    fill_zero,
+    minimum_result,
+    missing_policy_for,
+    raise_missing,
+    require_same_unit,
+    resolve_inputs,
+    split_present,
+    terminal_result,
+)
+
+
+def resolve_output_unit(
+    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+) -> Optional[str]:
+    return common_output_unit(stage, input_units)
+
+
+def _renormalize(
+    spec: StageSpec,
+    present: list[ResolvedInput],
+    missing: list[ResolvedInput],
+    all_weights_total: Decimal,
+) -> EvalResult:
+    if not present:
+        return terminal_result(
+            spec, missing, "pending", "no present inputs after excludeAndRenormalize"
+        )
+    effective_total = sum((r.weight or DZERO) for r in present)
+    if effective_total == 0:
+        return terminal_result(spec, missing, "pending", "no present inputs after exclusion")
+    renormalized = [(r, (r.weight or DZERO) / effective_total) for r in present]
+
+    mds = [
+        MissingDecision(
+            ref=m.ref,
+            reason=m.reason or "input absent",
+            policy="excludeAndRenormalize",
+            original_weight=m.weight,
+            effective_weight=DZERO,
+            total_before=all_weights_total,
+            resulting_state="excluded",
+        )
+        for m in missing
+    ]
+    decisions = [
+        "excludeAndRenormalize: "
+        f"priorTotal={decimal_str(all_weights_total)} "
+        f"effectiveTotal={decimal_str(effective_total)}"
+    ]
+    for r, w in renormalized:
+        decisions.append(
+            f"renormalized {r.ref}: {decimal_str(r.weight or DZERO)} -> {decimal_str(w)}"
+        )
+
+    def _avg():
+        return sum(r.value.value * w for r, w in renormalized)
+
+    result = run(_avg)
+    return EvalResult(
+        value=AcademicValue(result, present[0].value.unit),
+        decisions=decisions,
+        state=VALUE,
+        missing_decisions=mds,
+    )
 
 
 def _evaluate(ctx, spec: StageSpec) -> EvalResult:
-    inputs = spec.inputs
-    resolved: list[tuple[AcademicValue, Decimal]] = []
-    for ref in inputs:
-        value = ctx.resolve(ref.ref)
-        if value is None:
-            if spec.missing_policy == "zero":
-                resolved.append((AcademicValue(DZERO, "percent"), ref.weight or DZERO))
-                continue
-            from ..errors import MissingInputError
+    resolved = resolve_inputs(ctx, spec)
+    present, missing = split_present(resolved)
+    policy = missing_policy_for(spec)
 
-            raise MissingInputError(
-                f"stages[{spec.id}].operator={spec.operator}: input {ref.ref!r} missing."
-            )
-        resolved.append((value, ref.weight or DZERO))
+    if missing:
+        if policy == "fail":
+            raise_missing(spec, missing)
+        if policy == "pending":
+            return terminal_result(spec, missing, "pending", "required input is missing")
+        if policy == "notApplicable":
+            return terminal_result(spec, missing, "notApplicable", "required input is missing")
+        if policy == "minimumOutput":
+            return minimum_result(ctx, spec, missing)
+        if policy == "excludeAndRenormalize":
+            all_weights_total = sum((r.weight or DZERO) for r in resolved)
+            return _renormalize(spec, present, missing, all_weights_total)
+        # policy == "zero"
+        present, zero_mds = fill_zero(ctx, spec, present, missing)
+    else:
+        zero_mds = []
 
-    require_same_unit([v for v, _ in resolved], spec.operator, spec.id)
+    require_same_unit([r.value for r in present], spec.operator, spec.id)
 
-    weights = [w for _, w in resolved]
+    weights = [r.weight or DZERO for r in present]
     total = sum(weights, DZERO)
     if abs(total - 1) > WEIGHT_SUM_TOLERANCE:
         from ..errors import WeightSumError
@@ -34,28 +116,50 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
             f"stages[{spec.id}].operator={spec.operator}: weights sum {total} != 1."
         )
 
-    output_unit = resolved[0][0].unit
+    output_unit = present[0].value.unit
 
     def _sum():
-        return sum(v.value * w for v, w in resolved)
+        return sum(v.value.value * w for v, w in zip(present, weights))
 
     result = run(_sum)
-    return EvalResult(AcademicValue(result, output_unit))
+    return EvalResult(
+        AcademicValue(result, output_unit),
+        state=VALUE,
+        missing_decisions=zero_mds,
+    )
 
 
 spec = OperatorSpec(
     name="weightedAverage",
     version="1.0.0",
-    min_engine_version="0.1.0",
+    min_engine_version="0.2.0",
     params_schema={
         "type": "object",
-        "properties": {"weights": {"type": "object", "additionalProperties": {"type": "number"}}},
+        "properties": {
+            "weights": {"type": "object", "additionalProperties": {"type": "number"}},
+            "minimum": {
+                "type": "object",
+                "required": ["value", "unit"],
+                "properties": {
+                    "value": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+                    "unit": {"enum": ["percent", "points", "grade", "scalar", "level"]},
+                },
+                "additionalProperties": False,
+            },
+        },
         "additionalProperties": False,
     },
     allowed_phases=("aggregation", "conversion"),
     accepted_input_units=("percent", "points", "grade", "scalar"),
-    output_unit="scalar",
-    allowed_missing_policies=("fail", "zero"),
+    resolve_output_unit=resolve_output_unit,
+    allowed_missing_policies=(
+        "fail",
+        "zero",
+        "excludeAndRenormalize",
+        "minimumOutput",
+        "pending",
+        "notApplicable",
+    ),
     evaluate=_evaluate,
     description="Weighted arithmetic mean of present inputs; weights must sum to 1.",
 )

@@ -25,6 +25,12 @@
       "minItems": 1,
       "uniqueItems": true
     },
+    "assessmentUnits": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["percent", "points", "grade", "scalar", "level"]
+      }
+    },
     "stages": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/stage" }

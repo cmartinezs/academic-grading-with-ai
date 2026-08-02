@@ -3,14 +3,20 @@
 The engine works on validated, typed objects (never raw dicts). Policy loading
 is the single place where raw JSON is converted to models; every conversion
 path is covered by the validator before construction.
+
+Stage evaluation states (``StageState``) are first-class: a stage never loses
+the reason why it did or did not produce a value. ``missing``, ``pending``,
+``notApplicable`` and ``skippedCondition`` are distinguishable from each other
+and from a real value.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Mapping, Optional, Sequence
 
-from .decimal import Decimal, to_decimal
+from .decimal import Decimal, decimal_str, to_decimal
 
 UNITS = ("percent", "points", "grade", "scalar", "level")
 
@@ -32,6 +38,19 @@ ROUNDING_MODES = ("halfUp", "halfEven", "floor", "ceil", "truncate")
 TIE_POLICIES = ("replaceFirst", "replaceLast")
 
 OUTSIDE_RANGE_MODES = ("clamp", "reject")
+
+
+class StageState(str, Enum):
+    """Typed result of evaluating one stage (or resolving one input ref).
+
+    ``value`` is the only state that carries an ``AcademicValue``.
+    """
+
+    VALUE = "value"
+    MISSING = "missing"
+    PENDING = "pending"
+    NOT_APPLICABLE = "notApplicable"
+    SKIPPED_CONDITION = "skippedCondition"
 
 
 def validate_unit(unit: str) -> str:
@@ -63,8 +82,6 @@ class AcademicValue:
         return cls(to_decimal(value), unit)
 
     def to_dict(self) -> dict:
-        from .decimal import decimal_str
-
         return {"value": decimal_str(self.value), "unit": self.unit}
 
 
@@ -115,6 +132,50 @@ class StageSpec:
 
 
 @dataclass(frozen=True)
+class MissingDecision:
+    """Why an input did not contribute a real value, and what the policy did."""
+
+    ref: str
+    reason: str
+    policy: str
+    original_weight: Optional[Decimal] = None
+    effective_weight: Optional[Decimal] = None
+    total_before: Optional[Decimal] = None
+    resulting_state: str = "missing"
+
+    def to_dict(self) -> dict:
+        def state_str(value) -> str:
+            if isinstance(value, StageState):
+                return value.value
+            return str(value)
+
+        payload: dict = {
+            "ref": self.ref,
+            "reason": self.reason,
+            "policy": self.policy,
+        }
+        if self.original_weight is not None:
+            payload["originalWeight"] = decimal_str(self.original_weight)
+        if self.effective_weight is not None:
+            payload["effectiveWeight"] = decimal_str(self.effective_weight)
+        if self.total_before is not None:
+            payload["totalBefore"] = decimal_str(self.total_before)
+        payload["resultingState"] = state_str(self.resulting_state)
+        return payload
+
+
+@dataclass(frozen=True)
+class ResolvedInput:
+    """One input ref resolved to a typed state during an operator run."""
+
+    ref: str
+    value: Optional[AcademicValue]
+    state: str
+    reason: Optional[str] = None
+    weight: Optional[Decimal] = None
+
+
+@dataclass(frozen=True)
 class Policy:
     """Validated, typed grade policy (the calculation authority)."""
 
@@ -125,6 +186,7 @@ class Policy:
     assessments: Sequence[str]
     stages: Mapping[str, StageSpec]
     result_stage_id: str
+    assessment_units: Mapping[str, str] = field(default_factory=dict)
     raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     def ordered_stages(self) -> Sequence[str]:
@@ -137,14 +199,19 @@ class Policy:
     def stage(self, stage_id: str) -> StageSpec:
         return self.stages[stage_id]
 
+    def assessment_unit(self, ref: str) -> Optional[str]:
+        return self.assessment_units.get(ref)
+
 
 @dataclass(frozen=True)
 class EvalResult:
     """Output of one operator evaluation for one stage."""
 
-    value: AcademicValue
+    value: Optional[AcademicValue]
     decisions: Sequence[str] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
+    state: str = StageState.VALUE
+    missing_decisions: Sequence[MissingDecision] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -152,10 +219,11 @@ class StageEvaluation:
     """Per-stage record kept by the engine and materialized in the trace."""
 
     stage: StageSpec
+    state: str
     applied: bool
     input_refs: Sequence[str] = field(default_factory=tuple)
     normalized_inputs: Sequence[dict] = field(default_factory=tuple)
-    missing_decisions: Sequence[str] = field(default_factory=tuple)
+    missing_decisions: Sequence[MissingDecision] = field(default_factory=tuple)
     condition_decision: Optional[dict] = None
     value_before: Optional[AcademicValue] = None
     value_after: Optional[AcademicValue] = None
@@ -168,27 +236,63 @@ class StageEvaluation:
 class EvalContext:
     """Mutable execution context shared across stages of one calculation.
 
-    Holds the validated policy, the subject inputs and the outputs produced so
-    far by earlier stages. Operators and conditions read from it; they never
-    write files, use the clock or generate randomness.
+    Holds the validated policy, the subject inputs, the outputs produced so far
+    by earlier stages and the typed state of every evaluated stage. Operators
+    and conditions read from it; they never write files, use the clock or
+    generate randomness.
     """
 
     policy: Policy
     inputs: NormalizedInputs
     outputs: dict[str, AcademicValue] = field(default_factory=dict)
+    stage_states: dict[str, str] = field(default_factory=dict)
+    stage_reasons: dict[str, str] = field(default_factory=dict)
 
-    def resolve(self, ref: str) -> Optional[AcademicValue]:
-        """Resolve a ref to an AcademicValue (assessment input or stage output)."""
+    def __post_init__(self) -> None:
+        from .units import propagate_units
+
+        self.units: Mapping[str, Optional[str]] = propagate_units(self.policy)
+
+    def resolve_ref(self, ref: str) -> tuple[Optional[AcademicValue], str, Optional[str]]:
+        """Resolve a ref to ``(value, state, reason)``.
+
+        Only ``value`` state carries a value. The reason explains why a
+        non-value state happened (including why an upstream stage did not
+        produce an output), so downstream missing decisions can propagate it.
+        """
         if ref in self.policy.stages:
-            return self.outputs.get(ref)
+            state = self.stage_states.get(ref, StageState.MISSING)
+            if state == StageState.VALUE:
+                return self.outputs.get(ref), state, None
+            reason = self.stage_reasons.get(ref) or f"stage {ref!r} is {state}"
+            return None, state, reason
         assessment = self.inputs.get(ref)
         if assessment is not None and assessment.present and assessment.value is not None:
-            return assessment.value
-        return None
+            declared = self.policy.assessment_unit(ref)
+            if declared is not None and assessment.value.unit != declared:
+                from .errors import UnitMismatchError
+
+                raise UnitMismatchError(
+                    f"assessment {ref!r}: observed unit {assessment.value.unit!r} does not "
+                    f"match declared unit {declared!r} in the policy."
+                )
+            return assessment.value, StageState.VALUE, None
+        if assessment is not None and assessment.status:
+            reason = f"status={assessment.status}"
+        elif assessment is not None:
+            reason = "not present"
+        else:
+            reason = "unknown assessment"
+        return None, StageState.MISSING, reason
+
+    def resolve(self, ref: str) -> Optional[AcademicValue]:
+        """Resolve a ref to an AcademicValue, or None when it has no value."""
+        value, state, _ = self.resolve_ref(ref)
+        return value
 
     def present(self, ref: str) -> bool:
         if ref in self.policy.stages:
-            return ref in self.outputs
+            return self.stage_states.get(ref, StageState.MISSING) == StageState.VALUE
         assessment = self.inputs.get(ref)
         return assessment is not None and assessment.present
 
@@ -207,6 +311,7 @@ class EngineOutcome:
     policy: Policy
     result_stage_id: str
     value: Optional[AcademicValue]
+    state: str
     status: str
     finalizable: bool
     stages: Sequence[StageEvaluation]

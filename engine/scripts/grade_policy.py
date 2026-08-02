@@ -24,6 +24,7 @@ from grade_policy import (  # noqa: E402
     available_rounding_modes,
     calculate,
     load_policy,
+    __version__,
 )
 from grade_policy.errors import GradePolicyError, UsageError  # noqa: E402
 from grade_policy.models import AcademicValue, AssessmentInput, NormalizedInputs  # noqa: E402
@@ -44,7 +45,7 @@ def _redact(text: str) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = Parser(description="C2 grade policy engine (v0.1.0).")
+    parser = Parser(description=f"C2 grade policy engine (v{__version__}).")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_validate = sub.add_parser("validate", help="Validate a policy document (schema + semantics).")
@@ -114,11 +115,11 @@ def cmd_calculate(args) -> int:
         outcome = calculate(
             policy, inputs[subject_id], context={"sectionId": section, "subjectId": subject_id}
         )
-        row = {"subjectId": outcome.subject_id, "status": outcome.status, "finalizable": outcome.finalizable}
+        row = {"subjectId": outcome.subject_id, "status": outcome.status, "resultState": outcome.state, "finalizable": outcome.finalizable}
         if outcome.value is not None:
             row["value"] = outcome.value.to_dict()
         outcomes.append(row)
-    print(json.dumps({"schemaVersion": "1.0.0", "subjectOutcomes": outcomes}, indent=2))
+    print(json.dumps({"schemaVersion": "1.1.0", "subjectOutcomes": outcomes}, indent=2))
     return 0
 
 
@@ -130,12 +131,19 @@ def cmd_explain(args) -> int:
         outcome = calculate(
             policy, inputs[subject_id], context={"sectionId": args.section, "subjectId": subject_id}
         )
-        print(f"== {subject_id} -> {outcome.status}"
+        print(f"== {subject_id} -> {outcome.status} [{outcome.state}]"
               + (f" = {decimal_str(outcome.value.value)} {outcome.value.unit}" if outcome.value else ""))
         for ev in outcome.stages:
-            applied = "applied" if ev.applied else "skipped"
             output = f" => {decimal_str(ev.output.value)} {ev.output.unit}" if ev.output else ""
-            print(f"   {ev.stage.id:20s} [{ev.stage.phase}] {ev.stage.operator} {applied}{output}")
+            print(f"   {ev.stage.id:20s} [{ev.stage.phase}] {ev.stage.operator} {ev.state}{output}")
+            for md in ev.missing_decisions:
+                extra = []
+                if md.original_weight is not None:
+                    extra.append(f"originalWeight={decimal_str(md.original_weight)}")
+                if md.effective_weight is not None:
+                    extra.append(f"effectiveWeight={decimal_str(md.effective_weight)}")
+                suffix = f" ({', '.join(extra)})" if extra else ""
+                print(f"     missing[{md.ref}]: policy={md.policy} reason={md.reason} -> {md.resulting_state}{suffix}")
             for decision in ev.decisions:
                 print(f"     - {decision}")
             if ev.warnings:
@@ -144,7 +152,7 @@ def cmd_explain(args) -> int:
 
 
 def cmd_registry(args) -> int:
-    print("Engine version: 0.1.0")
+    print(f"Engine version: {__version__}")
     print("Operators:", ", ".join(available_operators()))
     print("Conditions:", ", ".join(available_conditions()))
     print("Rounding modes:", ", ".join(available_rounding_modes()))

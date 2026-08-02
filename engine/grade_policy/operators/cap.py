@@ -2,43 +2,66 @@
 
 from __future__ import annotations
 
+from typing import Mapping, Optional
+
 from ..decimal import Decimal, run
 from ..models import AcademicValue, EvalResult, StageSpec
-from .base import OperatorSpec
+from .base import (
+    VALUE,
+    OperatorSpec,
+    resolve_single,
+    single_input_output_unit,
+)
+
+
+def resolve_output_unit(
+    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+) -> Optional[str]:
+    return single_input_output_unit(stage, input_units)
 
 
 def _evaluate(ctx, spec: StageSpec) -> EvalResult:
-    if len(spec.inputs) != 1:
-        from ..errors import SchemaValidationError
-
-        raise SchemaValidationError(f"stages[{spec.id}].operator=cap expects exactly one input.")
-    value = ctx.resolve(spec.inputs[0].ref)
-    if value is None:
-        from ..errors import MissingInputError
-
-        raise MissingInputError(f"stages[{spec.id}].operator=cap: input missing.")
+    resolved = resolve_single(ctx, spec)
+    if resolved.terminal is not None:
+        return resolved.terminal
+    value = resolved.value_input.value
     cap = Decimal(str(spec.params.get("max", "100")))
 
     def _clamp():
         return min(value.value, cap)
 
     result = run(_clamp)
-    return EvalResult(AcademicValue(result, value.unit))
+    return EvalResult(
+        AcademicValue(result, value.unit),
+        state=VALUE,
+        missing_decisions=resolved.missing_decisions,
+    )
 
 
 spec = OperatorSpec(
     name="cap",
     version="1.0.0",
-    min_engine_version="0.1.0",
+    min_engine_version="0.2.0",
     params_schema={
         "type": "object",
-        "properties": {"max": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"}},
+        "properties": {
+            "max": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+            "minimum": {
+                "type": "object",
+                "required": ["value", "unit"],
+                "properties": {
+                    "value": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+                    "unit": {"enum": ["percent", "points", "grade", "scalar", "level"]},
+                },
+                "additionalProperties": False,
+            },
+        },
         "additionalProperties": False,
     },
     allowed_phases=("adjustment", "finalization"),
     accepted_input_units=("percent", "points", "grade", "scalar"),
-    output_unit="scalar",
-    allowed_missing_policies=("fail",),
+    resolve_output_unit=resolve_output_unit,
+    allowed_missing_policies=("fail", "zero", "minimumOutput", "pending", "notApplicable"),
     evaluate=_evaluate,
     description="Clamps the input value to an upper bound.",
 )

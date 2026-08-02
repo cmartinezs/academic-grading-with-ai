@@ -21,10 +21,16 @@ POLICY_SCHEMAS: Mapping[str, dict] = {
 
 OUTCOMES_SCHEMAS: Mapping[str, dict] = {
     "1.0.0": json.loads((_SCHEMAS_DIR / "outcomes.schema.json").read_text(encoding="utf-8")),
+    "1.1.0": json.loads(
+        (_SCHEMAS_DIR / "outcomes-1.1.0.schema.json").read_text(encoding="utf-8")
+    ),
 }
 
 TRACES_SCHEMAS: Mapping[str, dict] = {
     "1.0.0": json.loads((_SCHEMAS_DIR / "traces.schema.json").read_text(encoding="utf-8")),
+    "1.1.0": json.loads(
+        (_SCHEMAS_DIR / "traces-1.1.0.schema.json").read_text(encoding="utf-8")
+    ),
 }
 
 

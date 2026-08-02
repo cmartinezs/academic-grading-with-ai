@@ -3,8 +3,11 @@
 Responsibilities:
 
 - execute stages in deterministic topological order;
-- evaluate conditions and record the skip decision when not satisfied;
+- evaluate conditions and record the typed skip decision when not satisfied;
 - run each operator with the fixed decimal context;
+- track the typed ``StageState`` of every stage (value/missing/pending/
+  notApplicable/skippedCondition) so downstream stages can explain why a
+  dependency did not produce a value;
 - build the per-stage trace;
 - finalize a single subject outcome.
 
@@ -17,8 +20,8 @@ from __future__ import annotations
 import hashlib
 from typing import Mapping, Optional
 
-from .decimal import DZERO, decimal_str
-from .errors import MissingInputError, OutcomeError, UsageError
+from .decimal import decimal_str
+from .errors import OutcomeError, UsageError
 from .models import (
     AcademicValue,
     EngineOutcome,
@@ -28,6 +31,7 @@ from .models import (
     Policy,
     StageEvaluation,
     StageSpec,
+    StageState,
 )
 from .registry import require_operator
 from .conditions import CONDITION_EVALUATORS
@@ -46,18 +50,26 @@ def outcome_id(section_id: Optional[str], subject_id: str, policy: Policy) -> st
     return f"out_{digest}"
 
 
-def _resolve_inputs(ctx: EvalContext, spec: StageSpec) -> list[tuple[str, Optional[AcademicValue], Optional[object]]]:
+def _resolve_inputs(ctx: EvalContext, spec: StageSpec) -> list[tuple[str, Optional[AcademicValue], Optional[object], str, Optional[str]]]:
     resolved = []
     for ref in spec.inputs:
-        value = ctx.resolve(ref.ref)
-        resolved.append((ref.ref, value, ref.weight))
+        value, state, reason = ctx.resolve_ref(ref.ref)
+        resolved.append((ref.ref, value, ref.weight, state, reason))
     return resolved
 
 
-def _normalized_input_payload(resolved: list[tuple[str, Optional[AcademicValue], Optional[object]]]) -> list[dict]:
+def _normalized_input_payload(
+    resolved: list[tuple[str, Optional[AcademicValue], Optional[object], str, Optional[str]]],
+) -> list[dict]:
     payload = []
-    for ref, value, weight in resolved:
-        entry: dict = {"ref": ref, "value": value.to_dict() if value is not None else None}
+    for ref, value, weight, state, reason in resolved:
+        entry: dict = {
+            "ref": ref,
+            "value": value.to_dict() if value is not None else None,
+            "state": state,
+        }
+        if reason is not None:
+            entry["reason"] = reason
         if weight is not None:
             entry["weight"] = decimal_str(weight)
         payload.append(entry)
@@ -66,6 +78,7 @@ def _normalized_input_payload(resolved: list[tuple[str, Optional[AcademicValue],
 
 def _evaluate_stage(ctx: EvalContext, spec: StageSpec) -> StageEvaluation:
     operator = require_operator(spec.operator)
+    resolved = _resolve_inputs(ctx, spec)
 
     condition_decision = None
     if spec.condition is not None:
@@ -77,11 +90,16 @@ def _evaluate_stage(ctx: EvalContext, spec: StageSpec) -> StageEvaluation:
             "reason": reason,
         }
         if not satisfied:
+            ctx.stage_states[spec.id] = StageState.SKIPPED_CONDITION
+            ctx.stage_reasons[spec.id] = (
+                f"condition {spec.condition['kind']} not satisfied: {reason}"
+            )
             return StageEvaluation(
                 stage=spec,
+                state=StageState.SKIPPED_CONDITION,
                 applied=False,
-                input_refs=tuple(r[0] for r in _resolve_inputs(ctx, spec)),
-                normalized_inputs=_normalized_input_payload(_resolve_inputs(ctx, spec)),
+                input_refs=tuple(r[0] for r in resolved),
+                normalized_inputs=_normalized_input_payload(resolved),
                 missing_decisions=(),
                 condition_decision=condition_decision,
                 value_before=None,
@@ -92,13 +110,22 @@ def _evaluate_stage(ctx: EvalContext, spec: StageSpec) -> StageEvaluation:
             )
 
     result: EvalResult = operator.evaluate(ctx, spec)
-    ctx.outputs[spec.id] = result.value
+
+    if result.state == StageState.VALUE and result.value is not None:
+        ctx.outputs[spec.id] = result.value
+        ctx.stage_states[spec.id] = StageState.VALUE
+        ctx.stage_reasons.pop(spec.id, None)
+    else:
+        ctx.stage_states[spec.id] = result.state
+        ctx.stage_reasons[spec.id] = "; ".join(result.decisions) or f"stage {spec.id} {result.state}"
+
     return StageEvaluation(
         stage=spec,
+        state=result.state,
         applied=True,
-        input_refs=tuple(r[0] for r in _resolve_inputs(ctx, spec)),
-        normalized_inputs=_normalized_input_payload(_resolve_inputs(ctx, spec)),
-        missing_decisions=(),
+        input_refs=tuple(r[0] for r in resolved),
+        normalized_inputs=_normalized_input_payload(resolved),
+        missing_decisions=tuple(result.missing_decisions),
         condition_decision=condition_decision,
         value_before=None,
         value_after=result.value,
@@ -106,6 +133,17 @@ def _evaluate_stage(ctx: EvalContext, spec: StageSpec) -> StageEvaluation:
         decisions=tuple(result.decisions),
         warnings=tuple(result.warnings),
     )
+
+
+def _outcome_state(result_state: str) -> tuple[str, bool, Optional[AcademicValue]]:
+    if result_state == StageState.VALUE:
+        return "finalized", True, None
+    if result_state == StageState.PENDING:
+        return "pending", False, None
+    if result_state == StageState.NOT_APPLICABLE:
+        return "notApplicable", False, None
+    # skippedCondition / missing -> non-finalizable pending
+    return "pending", False, None
 
 
 def calculate(
@@ -123,19 +161,25 @@ def calculate(
 
     for sid in order:
         spec = policy.stages[sid]
-        eval = _evaluate_stage(ctx, spec)
-        stages.append(eval)
+        stages.append(_evaluate_stage(ctx, spec))
 
-    result_value = ctx.outputs.get(policy.result_stage_id)
+    result_stage_id = policy.result_stage_id
+    result_value = ctx.outputs.get(result_stage_id)
+    result_state = ctx.stage_states.get(
+        result_stage_id,
+        StageState.MISSING if result_value is None else StageState.VALUE,
+    )
 
-    status = "finalized" if result_value is not None else "pending"
-    finalizable = result_value is not None
+    status, finalizable, value = _outcome_state(result_state)
+    if result_state == StageState.VALUE:
+        value = result_value
 
     return EngineOutcome(
         subject_id=subject_id,
         policy=policy,
-        result_stage_id=policy.result_stage_id,
-        value=result_value,
+        result_stage_id=result_stage_id,
+        value=value,
+        state=result_state,
         status=status,
         finalizable=finalizable,
         stages=tuple(stages),

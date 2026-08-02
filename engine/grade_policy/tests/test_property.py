@@ -142,6 +142,97 @@ class DecimalIntegrityPropertyTest(unittest.TestCase):
         self.assertLessEqual(Decimal("0.6") + Decimal("0.4"), Decimal("1") + WEIGHT_SUM_TOLERANCE)
 
 
+class UnitPropagationPropertyTest(unittest.TestCase):
+    def test_weighted_average_preserves_random_input_unit(self) -> None:
+        for unit in ("percent", "points", "grade", "scalar"):
+            doc = {
+                "schemaVersion": "1.0.0",
+                "policyId": "prop-units",
+                "policyVersion": "1.0.0",
+                "engineMinVersion": "0.1.0",
+                "assessments": ["a", "b"],
+                "assessmentUnits": {"a": unit, "b": unit},
+                "stages": {
+                    "w": {
+                        "id": "w",
+                        "phase": "aggregation",
+                        "operator": "weightedAverage",
+                        "inputs": [{"ref": "a", "weight": "0.6"}, {"ref": "b", "weight": "0.4"}],
+                    },
+                    "final": {
+                        "id": "final",
+                        "phase": "finalization",
+                        "operator": "round",
+                        "inputs": [{"ref": "w"}],
+                        "params": {"decimalPlaces": 1, "mode": "halfUp"},
+                    },
+                },
+                "resultStageId": "final",
+            }
+            loaded = load_policy(doc)
+            rng = random.Random(hash(unit) % 10000)
+            for _ in range(20):
+                a = rng.uniform(0, 100)
+                b = rng.uniform(0, 100)
+                out = calculate(loaded, _inputs_unit({"a": a, "b": b}, unit), {"subjectId": "S"})
+                self.assertEqual(out.value.unit, unit)
+                expected = round(0.6 * a + 0.4 * b, 1)
+                self.assertAlmostEqual(float(out.value.value), expected, places=8)
+
+    def test_static_units_agree_with_runtime_across_chains(self) -> None:
+        from grade_policy.units import propagate_units
+
+        for unit in ("percent", "points", "grade", "scalar"):
+            doc = {
+                "schemaVersion": "1.0.0",
+                "policyId": "prop-chain",
+                "policyVersion": "1.0.0",
+                "engineMinVersion": "0.1.0",
+                "assessments": ["a"],
+                "assessmentUnits": {"a": unit},
+                "stages": {
+                    "w": {
+                        "id": "w",
+                        "phase": "aggregation",
+                        "operator": "weightedAverage",
+                        "inputs": [{"ref": "a", "weight": "1"}],
+                    },
+                    "cap": {
+                        "id": "cap",
+                        "phase": "adjustment",
+                        "operator": "cap",
+                        "inputs": [{"ref": "w"}],
+                        "params": {"max": "100"},
+                    },
+                    "final": {
+                        "id": "final",
+                        "phase": "finalization",
+                        "operator": "round",
+                        "inputs": [{"ref": "cap"}],
+                        "params": {"decimalPlaces": 1},
+                    },
+                },
+                "resultStageId": "final",
+            }
+            loaded = load_policy(doc)
+            units = propagate_units(loaded)
+            self.assertEqual(units["w"], unit)
+            self.assertEqual(units["cap"], unit)
+            self.assertEqual(units["final"], unit)
+            out = calculate(loaded, _inputs_unit({"a": 50}, unit), {"subjectId": "S"})
+            self.assertEqual(out.value.unit, units["final"])
+
+
+def _inputs_unit(scores: dict[str, float], unit: str) -> NormalizedInputs:
+    return NormalizedInputs(
+        subject_id="S",
+        assessments={
+            ref: AssessmentInput(ref, True, AcademicValue.from_scalar(score, unit))
+            for ref, score in scores.items()
+        },
+    )
+
+
 class SamplingPropertyTest(unittest.TestCase):
     def test_weighted_average_matches_float_sanity(self) -> None:
         policy = load_policy(
