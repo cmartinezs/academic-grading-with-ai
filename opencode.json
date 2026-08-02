@@ -1,0 +1,112 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "share": "disabled",
+
+  "model": "huawei/deepseek-v4-flash-no-thinking",
+  "small_model": "huawei/deepseek-v4-flash-no-thinking",
+
+  "provider": {
+    "huawei": {
+      "name": "Huawei ModelArts MaaS",
+      "npm": "@ai-sdk/openai-compatible",
+
+      "options": {
+        "apiKey": "{env:HUAWEI_MAAS_API_KEY}",
+        "baseURL": "https://api-ap-southeast-1.modelarts-maas.com/openai/v1"
+      },
+
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro · Thinking"
+        },
+        "deepseek-v4-pro-no-thinking": {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro · No Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": false
+            }
+          }
+        },
+
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash · Thinking"
+        },
+        "deepseek-v4-flash-no-thinking": {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash · No Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": false
+            }
+          }
+        },
+
+        "deepseek-v3.2": {
+          "name": "DeepSeek V3.2 · Default No Thinking"
+        },
+        "deepseek-v3.2-thinking": {
+          "id": "deepseek-v3.2",
+          "name": "DeepSeek V3.2 · Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": true
+            }
+          }
+        },
+
+        "deepseek-r1-250528": {
+          "name": "DeepSeek R1 · Thinking Only"
+        },
+
+        "DeepSeek-V3": {
+          "name": "DeepSeek V3"
+        },
+
+        "glm-5.1": {
+          "name": "GLM 5.1 · Thinking"
+        },
+        "glm-5.1-no-thinking": {
+          "id": "glm-5.1",
+          "name": "GLM 5.1 · No Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": false
+            }
+          }
+        },
+
+        "glm-5": {
+          "name": "GLM 5 · Thinking"
+        },
+        "glm-5-no-thinking": {
+          "id": "glm-5",
+          "name": "GLM 5 · No Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": false
+            }
+          }
+        },
+
+        "glm-5.2": {
+          "name": "GLM 5.2 · Thinking"
+        },
+        "glm-5.2-no-thinking": {
+          "id": "glm-5.2",
+          "name": "GLM 5.2 · No Thinking",
+          "options": {
+            "chat_template_kwargs": {
+              "thinking": false
+            }
+          }
+        }
+      }
+    }
+  },
+
+  "disabled_providers": [
+    "anthropic"
+  ],
+}
