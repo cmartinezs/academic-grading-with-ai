@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading.ai/schemas/email-template-v1.json",
+  "title": "Email Template V1",
+  "type": "object",
+  "required": ["schemaVersion", "templateId", "templateVersion", "intent", "subject", "textBody", "allowedPlaceholders"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"type": "string", "const": "1.0.0"},
+    "templateId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"},
+    "templateVersion": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+    "intent": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"},
+    "subject": {"type": "string", "minLength": 1},
+    "textBody": {"type": "string", "minLength": 1},
+    "allowedPlaceholders": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9]*$"},
+      "uniqueItems": true
+    }
+  }
+}

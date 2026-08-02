@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading.ai/schemas/sender-profile-v1.json",
+  "title": "Sender Profile V1",
+  "type": "object",
+  "required": ["schemaVersion", "senderProfileId", "fromAddress"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"type": "string", "const": "1.0.0"},
+    "senderProfileId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"},
+    "fromAddress": {"type": "string"},
+    "replyTo": {"type": "string"}
+  }
+}

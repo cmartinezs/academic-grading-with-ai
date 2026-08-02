@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "1.0.0",
+  "templateId": "result-notification",
+  "templateVersion": "1",
+  "intent": "result-notification",
+  "subject": "Resultados {{sectionId}} — {{publicationId}}",
+  "textBody": "Estimado/a {{displayName}},\n\nSe han publicado los resultados para la sección {{sectionId}}.\n\n{{resultsBlock}}\n\nAtentamente",
+  "allowedPlaceholders": ["displayName", "sectionId", "publicationId", "resultsBlock"]
+}

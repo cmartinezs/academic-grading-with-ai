@@ -41,6 +41,16 @@
       "path": "engine/grade_policy/tests/**",
       "rules": ["chilean-rut", "email"],
       "reason": "C2 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
+    },
+    {
+      "path": "engine/email_delivery/transport/smtp.py",
+      "rules": ["secret-assignment"],
+      "reason": "SMTP transport reads password from environment variable only; variable is never logged, serialized, or committed."
+    },
+    {
+      "path": "engine/email_delivery/tests/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "C3 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
     }
   ]
 }
