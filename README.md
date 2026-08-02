@@ -56,7 +56,7 @@ Después de crear una evaluación:
 # C1: build a verifiable snapshot of the legacy export and publish it
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> build --publication <PUB_ID>
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> reconcile [--publication <PUB_ID>]
-./scripts/publication-snapshot.sh --section <SECTION_CODE> compatibility [--update-legacy-aliases]
+./scripts/publication-snapshot.sh --section <SECTION_CODE> compatibility [--update-legacy-aliases] [--replace-legacy-aliases]
 ```
 
 `SECTION_CODE` selecciona la sección activa cuando existe más de una carpeta en `evaluations/`.

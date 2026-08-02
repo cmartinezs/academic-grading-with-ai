@@ -2,9 +2,10 @@
 
 Corte **C1 — Publication Snapshot y lifecycle**, branch
 `feat/c1-publication-snapshot-lifecycle`. Incluye la corrección de los 55 hallazgos P0
-del review de la fase 1 y la reparación residual final (serialización de compatibilidad,
-aliases legacy atómicos, contrato legacy exacto, privacidad de excepciones en el origen y
-reconciliación por publicación).
+del review de la fase 1 y la reparación residual final (serialización de compatibilidad
+y lifecycle, aliases legacy atómicos con reemplazo vía CLI, contrato legacy exacto,
+privacidad de excepciones en el origen, reconciliación por publicación y recuperación
+de backups huérfanos de aliases).
 
 ## Base
 
@@ -18,7 +19,7 @@ reconciliación por publicación).
 
 | Check | Resultado |
 |---|---|
-| C1 suite unittest (113 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery, compat final, aliases atómicos, privacidad de excepciones, consumer real, reconcile por publicación) | `OK` |
+| C1 suite unittest (119 tests: contrato, integración, fallos, concurrencia, P0 hash, P0 privacy, P0 lifecycle, P0 compat, P0 recovery, compat final, aliases atómicos, privacidad de excepciones, consumer real, reconcile por publicación, serialización transición/compat, CLI replace-legacy-aliases, recuperación de backups huérfanos) | `OK` |
 | C1 self-check E2E sintético (build → review → approve → published → compat → supersede) | `OK` |
 | Regresión C0 (92 tests) | `OK` |
 | Scan tracked estricto (186 archivos) | `BLOCK=0 REVIEW=0` |
@@ -47,7 +48,7 @@ reconciliación por publicación).
   `scripts/publication-snapshot.sh` (build/verify/review/approve/status/transition/
   compatibility/reconcile/discard/test). Exit codes 0/1/2. Redacción de RUT/email/paths
   en stderr.
-- Tests: `engine/publication/tests/test_c1.py` (113 tests, incluidos workers
+- Tests: `engine/publication/tests/test_c1.py` (119 tests, incluidos workers
   multiproceso) + runner `engine/scripts/publication_snapshot_test.py`.
 - CI `.github/workflows/c1.yml` (tests/E2E, regresión C0, scan estricto).
 - Docs: plan, contrato, runbooks; README, STRUCTURE_INVENTORY,
@@ -124,6 +125,28 @@ reconciliación por publicación).
   errores claros para id inexistente, rechazo de id inválido y toca solo ese snapshot.
   Tests: sección con 3 snapshots donde solo el segundo se reconcilia; primero y tercero
   byte-idénticos y sin eventos nuevos; id inexistente/inválido; rerun idempotente.
+- **Serialización lifecycle ↔ compatibilidad**: las transiciones de lifecycle
+  (`published`, `superseded`, `corrected`, `revoked`) adquieren el lock por
+  `(section, publication)` antes del lock de sección del ledger (orden publication →
+  lifecycle) mediante `builder.transition`, el mismo lock que usa `compat.generate` y
+  build/review/approve. Prueba multiproceso race generate vs `revoked` y vs `corrected`
+  sobre la misma publicación (8 iteraciones por evento con reloj real): cuando gana la
+  transición terminal, `generate` falla y no publica nada; cuando gana `generate`,
+  las vistas se publican estrictamente antes del evento terminal (`generatedAt <= at`);
+  se ejerce y comprueba ambos ordenamientos.
+- **CLI `--replace-legacy-aliases`**: expuesto en `compatibility` y propagado a
+  `compat.generate()`; se rechaza sin `--update-legacy-aliases` (exit 1 con mensaje
+  claro). Tests CLI por subprocess: uso inválido, destino existente rechazado (sin
+  staging residual) y reemplazo explícito exitoso que conserva el contrato legacy
+  (`resultPath` null).
+- **Recuperación de backups huérfanos de aliases**: cada reemplazo registra un marker
+  `<operationId>.PENDING` junto al backup antes de mover el bundle actual; si el proceso
+  aborta después de mover el alias al backup, `reconcile` detecta el backup huérfano
+  bajo su lock de publicación y: alias ausente → restaura el bundle anterior
+  (byte-idéntico), alias activo válido → conserva el alias y elimina el backup obsoleto
+  (un alias activo válido nunca se sobrescribe), alias activo inválido → reporta y no
+  toca nada. Tests: backup presente + alias ausente, y backup presente + alias activo;
+  ambos idempotentes y con limpieza de staging/backups.
 
 ## Conformidad con ADRs
 
@@ -157,6 +180,12 @@ profunda de referencias); el flujo legacy sigue intacto.
 - `c26cbc8` fix(C1 privacy): sanitize exceptions at source, never leak PII or paths
 - `e11dd58` fix(C1 reconcile): scope reconciliation to a single publication
 - `3268f68` docs(C1 final): contract/runbooks/verification report, inventory and PR body
+- `b0e0d91` fix(C1 privacy): keep G6 path findings path-free at source
+- `d6b7525` test(C1 compat): prove the real legacy consumer reads aliases unmodified
+- `42774ea` docs(C1 final): CLI list includes reconcile; final 113-test verification
+- `39c132d` fix(C1 lifecycle): serialize transitions with compat via the publication lock
+- `8a43436` feat(C1 compat): expose --replace-legacy-aliases in the CLI
+- `48d850e` fix(C1 compat): recover orphaned legacy-alias backups in reconcile
 
 ## Observaciones
 

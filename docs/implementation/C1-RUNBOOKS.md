@@ -37,6 +37,26 @@ RH=<reviewHash-impreso-por-build>
 ./scripts/publication-snapshot.sh --section "$SECTION_CODE" compatibility --update-legacy-aliases
 ```
 
+Las transiciones de lifecycle (`published`, `superseded`, `corrected`, `revoked`)
+se serializan con la generación de compatibilidad y con build/review/approve
+usando el mismo lock por `(section, publication)`: el orden es siempre
+*publication lock → lifecycle lock*, así que un evento terminal nunca se
+intercala con la publicación de vistas para la misma publicación (una vez
+registrado `revoked`/`corrected`/`superseded`, `compatibility` falla y no escribe
+nada).
+
+Para regenerar los aliases legacy cuando ya existen (reemplazo atómico con
+backup temporal):
+
+```bash
+./scripts/publication-snapshot.sh --section "$SECTION_CODE" compatibility \
+  --update-legacy-aliases --replace-legacy-aliases
+```
+
+`--replace-legacy-aliases` exige `--update-legacy-aliases`; sin el flag de
+reemplazo, un destino ya existente se rechaza (`DestinationExistsError`).
+Las vistas versionadas por `publicationId` nunca se sobrescriben.
+
 Para recuperar el `reviewHash` de un staging ya construido:
 
 ```bash
@@ -91,6 +111,12 @@ Recuperación de crash post-promoción (idempotente; nunca elimina un snapshot p
 `reconcile` restaura permisos read-only en snapshots promovidos con permisos de
 escritura y añade los eventos académicos faltantes en el ledger; volver a ejecutarlo
 no produce cambios. Los fallos de integridad se reportan sin borrar el snapshot.
+
+`reconcile` también recupera backups huérfanos de aliases legacy dejados por un
+crash durante un reemplazo (`--replace-legacy-aliases`): si el alias no existe y
+hay backup, se restaura el bundle anterior; si el alias activo existe y es válido,
+el backup obsoleto se elimina y el alias activo válido nunca se sobrescribe; si el
+alias activo no valida, se reporta y no se toca nada. Es idempotente.
 
 Con `--publication <PUB_ID>` la reconciliación se limita a un único snapshot: un
 `publicationId` inexistente es un error de estado claro y un id inválido se rechaza

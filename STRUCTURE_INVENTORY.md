@@ -78,7 +78,7 @@ la existencia de la documentación.
 | `engine/c0/tests/` | Suite de tests C0 (unittest, stdlib). |
 | `engine/publication/` | Módulo C1: schemas, adaptador legacy, manifest/hashes, builder, lifecycle, compat. |
 | `engine/publication/schemas/` | Schemas JSON Draft 2020-12 de contratos de snapshot. |
-| `engine/publication/tests/` | Suite de tests C1 (113 tests + E2E). |
+| `engine/publication/tests/` | Suite de tests C1 (119 tests + E2E). |
 | `engine/publication/requirements.txt` | Dependencia pinneada: `jsonschema==4.10.3`. |
 | `engine/templates/evaluation-base-template.md` | Plantilla fuente para generar `base.md`. |
 | `engine/templates/evaluation-case-template.md` | Plantilla fuente para generar `form-x/case.md`. |
@@ -107,7 +107,7 @@ la existencia de la documentación.
 | `scripts/c0-test.sh` | Ejecuta la suite de tests C0. |
 | `scripts/c0-scan.sh` | Ejecuta el scanner PII/secrets C0. |
 | `scripts/c0-status.sh` | Ejecuta el chequeo de raíces de datos C0. |
-| `scripts/publication-snapshot.sh` | CLI C1 (build/verify/review/approve/status/transition/compatibility/reconcile/discard) + `test`. |
+| `scripts/publication-snapshot.sh` | CLI C1 (build/verify/review/approve/status/transition/compatibility [--replace-legacy-aliases]/reconcile/discard) + `test`. |
 
 ## `automation/`
 
