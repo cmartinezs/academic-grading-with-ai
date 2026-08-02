@@ -1885,6 +1885,70 @@ class CompatCliTest(C1TestCase):
 # ---------------------------------------------------------------------------
 
 
+class AliasBackupRecoveryTest(C1TestCase):
+    def _alias_files(self, ctx):
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        if not alias_root.is_dir():
+            return {}
+        return {
+            path.relative_to(alias_root).as_posix(): json.loads(path.read_text(encoding="utf-8"))
+            for path in alias_root.rglob("*.json")
+        }
+
+    def _backup_files(self, ctx):
+        backup_root = ctx.runtime.temp_root / "compat-alias-backup" / SECTION
+        if not backup_root.is_dir():
+            return []
+        return [p for p in backup_root.rglob("*") if p.is_file()]
+
+    def _simulate_crash(self, ctx, *, with_alias_active, pub="pub_a"):
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        op = compat._operation_id()
+        backup = ctx.runtime.temp_root / "compat-alias-backup" / SECTION / pub / op
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if with_alias_active:
+            shutil.copytree(alias_root, backup)
+        else:
+            os.rename(alias_root, backup)
+        write(backup.parent / f"{op}.PENDING", {
+            "schemaVersion": schemas.SCHEMA_VERSION,
+            "stage": "pending-promote",
+            "sectionId": SECTION,
+            "publicationId": pub,
+            "operationId": op,
+            "generatedAt": "2025-01-01T00:00:00Z",
+        })
+        return backup
+
+    def test_backup_present_alias_absent_restores_old_bundle(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        before = self._alias_files(ctx)
+        self.assertTrue(before)
+        self._simulate_crash(ctx, with_alias_active=False)
+        self.assertFalse(
+            compat.legacy_alias_dir(ctx, SECTION).exists(),
+            "alias absent after the crash",
+        )
+
+        actions = builder.reconcile(ctx)
+        self.assertTrue(any("alias-backup-restored:pub_a" in a for a in actions), actions)
+        self.assertTrue(compat.legacy_alias_dir(ctx, SECTION).is_dir(), "previous bundle restored")
+        self.assertEqual(self._alias_files(ctx), before, "restored bundle is byte-identical")
+        self.assertEqual(self._backup_files(ctx), [], "orphan backup cleaned")
+
+    def test_backup_present_alias_active_keeps_valid_alias(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        compat.generate(ctx, update_legacy_aliases=True)
+        before = self._alias_files(ctx)
+        self._simulate_crash(ctx, with_alias_active=True)
+
+        actions = builder.reconcile(ctx)
+        self.assertTrue(any("alias-backup-removed:pub_a" in a for a in actions), actions)
+        self.assertEqual(self._alias_files(ctx), before, "valid active alias never overwritten")
+        self.assertEqual(self._backup_files(ctx), [], "stale backup removed")
+
+
 if __name__ == "__main__":
 
     unittest.main()

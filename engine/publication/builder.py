@@ -755,11 +755,16 @@ def reconcile(ctx: BuildContext, publication_id: Optional[str] = None) -> list[s
     - a promoted snapshot is NEVER deleted to fake a rollback: integrity
       failures are reported, not repaired by removal.
 
-    With ``publication_id`` the operation is scoped to exactly that snapshot:
-    an invalid id is rejected before any scan, a nonexistent id raises a clear
-    state error, and no other publication is ever modified. Without it the
-    whole section is reconciled. Running reconcile twice produces no further
-    changes (idempotent).
+    Orphan legacy-alias backups (crash after the backup move of a replace) are
+    also recovered here: a backup with no active alias restores the previous
+    bundle, a backup alongside a valid active alias is removed, and a valid
+    active alias is never overwritten.
+
+    With ``publication_id`` the operation is scoped to exactly that snapshot
+    (and any orphan alias backups for it): an invalid id is rejected before any
+    scan, a nonexistent id raises a clear state error, and no other publication
+    is ever modified. Without it the whole section is reconciled. Running
+    reconcile twice produces no further changes (idempotent).
     """
     section_root = ctx.sections_root() / ctx.section_id
     ledger = ctx.ledger()
@@ -774,9 +779,11 @@ def reconcile(ctx: BuildContext, publication_id: Optional[str] = None) -> list[s
             )
         targets = [dest]
     else:
-        if not section_root.is_dir():
-            return actions
-        targets = sorted(path for path in section_root.iterdir() if path.is_dir())
+        targets = (
+            sorted(path for path in section_root.iterdir() if path.is_dir())
+            if section_root.is_dir()
+            else []
+        )
 
     for dest in targets:
         manifest_path = dest / "manifest.json"
@@ -789,27 +796,32 @@ def reconcile(ctx: BuildContext, publication_id: Optional[str] = None) -> list[s
         if not pub:
             continue
 
-        report = verify_snapshot(dest, ctx.section_id, pub, immutable=False)
-        if not report.passed():
-            actions.append(f"integrity-failed:{pub}")
-            continue
+        with publication_lock(ctx.runtime.state_root, ctx.section_id, pub):
+            report = verify_snapshot(dest, ctx.section_id, pub, immutable=False)
+            if not report.passed():
+                actions.append(f"integrity-failed:{pub}")
+                continue
 
-        writable = _writable_files(dest)
-        if writable:
-            _make_read_only(dest)
-            actions.append(f"readonly-restored:{pub}")
+            writable = _writable_files(dest)
+            if writable:
+                _make_read_only(dest)
+                actions.append(f"readonly-restored:{pub}")
 
-        state = ledger.current_state(pub)
-        if state == "nonexistent":
-            ledger.append("created", pub, actor="system")
-            ledger.append("reviewed", pub, actor="reconcile")
-            ledger.append("approved", pub, actor="reconcile")
-            actions.append(f"ledger-reconciled:{pub}")
-        elif state == "created":
-            ledger.append("reviewed", pub, actor="reconcile")
-            ledger.append("approved", pub, actor="reconcile")
-            actions.append(f"ledger-reconciled:{pub}")
-        elif state == "reviewed":
-            ledger.append("approved", pub, actor="reconcile")
-            actions.append(f"ledger-reconciled:{pub}")
+            state = ledger.current_state(pub)
+            if state == "nonexistent":
+                ledger.append("created", pub, actor="system")
+                ledger.append("reviewed", pub, actor="reconcile")
+                ledger.append("approved", pub, actor="reconcile")
+                actions.append(f"ledger-reconciled:{pub}")
+            elif state == "created":
+                ledger.append("reviewed", pub, actor="reconcile")
+                ledger.append("approved", pub, actor="reconcile")
+                actions.append(f"ledger-reconciled:{pub}")
+            elif state == "reviewed":
+                ledger.append("approved", pub, actor="reconcile")
+                actions.append(f"ledger-reconciled:{pub}")
+
+    from . import compat as _compat
+
+    actions.extend(_compat.recover_orphaned_alias_backups(ctx, publication_id=publication_id))
     return actions

@@ -572,6 +572,18 @@ def _commit_legacy_aliases_locked(
             )
 
         if alias_root.exists():
+            marker = backup.parent / f"{operation_id}.PENDING"
+            write_json(
+                marker,
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "stage": "pending-promote",
+                    "sectionId": ctx.section_id,
+                    "publicationId": ctx.publication_id,
+                    "operationId": operation_id,
+                    "generatedAt": ctx.clock.iso(),
+                },
+            )
             backup.parent.mkdir(parents=True, exist_ok=True)
             check_same_filesystem(alias_root, backup)
             os.rename(alias_root, backup)
@@ -583,8 +595,17 @@ def _commit_legacy_aliases_locked(
                 if not alias_root.exists() and backup.exists():
                     os.rename(backup, alias_root)
                     _fsync_parent(alias_root.parent)
+                    try:
+                        marker.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 raise
             shutil.rmtree(backup, ignore_errors=True)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+            _cleanup_backup_root(backup.parent)
         else:
             check_same_filesystem(staging, alias_root.parent)
             alias_root.parent.mkdir(parents=True, exist_ok=True)
@@ -599,3 +620,125 @@ def _commit_legacy_aliases_locked(
 
 def _view_root(ctx) -> Path:
     return section_compat_dir(ctx, ctx.section_id) / ctx.publication_id
+
+
+# ---------------------------------------------------------------------------
+# Orphan legacy-alias backup recovery (crash between backup-move and cleanup)
+# ---------------------------------------------------------------------------
+
+
+def recover_orphaned_alias_backups(ctx, publication_id: Optional[str] = None) -> list[str]:
+    """Detect and recover legacy-alias backups left behind by an aborted replace.
+
+    A backup directory under ``<temp>/compat-alias-backup/<section>/<pub>/`` is
+    orphaned whenever a replace for that publication is not running: replaces are
+    serialized under the per-publication lock, so observing a backup while holding
+    that lock means the previous execution crashed. Each publication is processed
+    under its own lock, so this is safe to call standalone and from
+    ``builder.reconcile`` (which already holds the publication lock per target).
+
+    Recovery rules (a valid active alias is never overwritten):
+
+    - alias absent + backup present  -> the previous bundle is restored (crash
+      between backup-move and promote);
+    - alias valid + backup present   -> the promoted bundle is kept and the stale
+      backup is removed (crash after promote, before cleanup);
+    - alias present but invalid      -> reported, never overwritten; the backup is
+      kept for manual review.
+    """
+    backup_root = ctx.runtime.temp_root / "compat-alias-backup" / ctx.section_id
+    if not backup_root.is_dir():
+        return []
+    publications = sorted(p.name for p in backup_root.iterdir() if p.is_dir())
+    if publication_id is not None:
+        publications = [publication_id] if publication_id in publications else []
+    actions: list[str] = []
+    for pub in publications:
+        with publication_lock(ctx.runtime.state_root, ctx.section_id, pub):
+            actions.extend(_recover_orphaned_alias_backups_locked(ctx, pub))
+    return actions
+
+
+def _recover_orphaned_alias_backups_locked(ctx, publication_id: str) -> list[str]:
+    """Recover orphan backups for one publication; the caller holds its lock."""
+    backup_root = ctx.runtime.temp_root / "compat-alias-backup" / ctx.section_id / publication_id
+    if not backup_root.is_dir():
+        return []
+    backups = sorted(p for p in backup_root.iterdir() if p.is_dir())
+    pending = sorted(p for p in backup_root.iterdir() if p.is_file() and p.suffix == ".PENDING")
+    if not backups:
+        for marker in pending:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _cleanup_backup_root(backup_root)
+        return []
+    alias_root = legacy_alias_dir(ctx, ctx.section_id)
+    if not alias_root.is_dir():
+        chosen = backups[-1]
+        check_same_filesystem(chosen, alias_root.parent)
+        alias_root.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(chosen, alias_root)
+        for stale in backups:
+            if stale != chosen:
+                shutil.rmtree(stale, ignore_errors=True)
+        _fsync_parent(alias_root.parent)
+        _cleanup_backup_root(backup_root)
+        for marker in pending:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return [f"alias-backup-restored:{publication_id}"]
+    valid, _reason = _alias_bundle_is_valid(ctx, alias_root)
+    if valid:
+        for backup in backups:
+            shutil.rmtree(backup, ignore_errors=True)
+        for marker in pending:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _cleanup_backup_root(backup_root)
+        return [f"alias-backup-removed:{publication_id}"]
+    return [f"alias-integrity-failed:{publication_id}"]
+
+
+def _alias_bundle_is_valid(ctx, alias_root: Path) -> tuple[bool, str]:
+    """Structural + provenance + privacy check of the active legacy alias bundle."""
+    if not alias_root.is_dir():
+        return False, "missing"
+    contract_errors = _legacy_contract_errors(alias_root)
+    if contract_errors:
+        return False, "; ".join(contract_errors)
+    provenance_path = alias_root / "PROVENANCE.json"
+    if not provenance_path.is_file():
+        return False, "PROVENANCE.json missing"
+    provenance = read_json(provenance_path)
+    source_pub = provenance.get("sourcePublicationId")
+    if source_pub:
+        manifest_path = ctx.sections_root() / ctx.section_id / source_pub / "manifest.json"
+        if manifest_path.is_file():
+            manifest = read_json(manifest_path)
+            if manifest.get("contentHash") != provenance.get("canonicalSourceHash"):
+                return False, "canonicalSourceHash does not match the source manifest"
+    report = VerifyReport(root=alias_root)
+    files = {
+        path.relative_to(alias_root).as_posix(): path
+        for path in alias_root.rglob("*")
+        if path.is_file() and path.name != "PENDING.json"
+    }
+    gate_privacy(report, alias_root, files)
+    content_findings = _content_findings(report)
+    if content_findings:
+        return False, "; ".join(content_findings)
+    return True, ""
+
+
+def _cleanup_backup_root(backup_root: Path) -> None:
+    try:
+        if backup_root.is_dir() and not any(backup_root.iterdir()):
+            os.rmdir(backup_root)
+    except OSError:
+        pass
