@@ -1,12 +1,20 @@
 """piecewiseLinearScale: map a value across ordered breakpoints.
 
-Each pair is ``{"from": <value>, "to": <value>}``, ascending ``from``. The
-first pair starts at negative infinity and the last pair's upper bound is
-positive infinity. Values below the first ``from`` clamp to the first ``to``;
-values above the last ``from`` clamp to the last ``to``.
+Contract (C2-GRADE-POLICY-CONTRACT.md §6):
 
-The output unit is explicit via ``params.outputUnit``; the input must be
-``percent``. This is the only operator that converts between units.
+- ``inputs``: exactly one ref;
+- ``params.breakpoints``: ``[{"x": "...", "y": "..."}]`` with ``x`` strictly
+  increasing (at least two breakpoints; duplicates rejected);
+- ``params.outputUnit``: explicit output unit (the only operator that converts
+  unit);
+- ``params.outsideRange``: ``clamp`` | ``reject`` (never implicit).
+
+Runtime behavior:
+
+- deterministic linear interpolation between breakpoints;
+- ``clamp`` clamps out-of-range inputs only when ``outsideRange == clamp``;
+- ``reject`` raises a typed ``OutOfRangeError`` for out-of-range inputs;
+- exact behavior at breakpoints (``x == breakpoint`` yields its ``y``).
 """
 
 from __future__ import annotations
@@ -14,28 +22,127 @@ from __future__ import annotations
 from typing import Mapping, Optional, Sequence
 
 from ..decimal import DZERO, Decimal, run
-from ..models import (
-    AcademicValue,
-    EvalResult,
-    MissingDecision,
-    ResolvedInput,
-    StageSpec,
-)
+from ..errors import OutOfRangeError, SchemaValidationError
+from ..models import AcademicValue, EvalResult, MissingDecision, Policy, ResolvedInput, StageSpec
 from .base import (
     VALUE,
     OperatorSpec,
     missing_policy_for,
     raise_missing,
-    require_unit,
     resolve_inputs,
     terminal_result,
 )
 
 
 def resolve_output_unit(
-    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+    stage: StageSpec, units: Mapping[str, Optional[str]]
 ) -> Optional[str]:
     return stage.params.get("outputUnit")
+
+
+def semantic_validate(
+    stage: StageSpec, policy: Policy, units: Mapping[str, Optional[str]]
+) -> Sequence[tuple[str, str]]:
+    findings: list[tuple[str, str]] = []
+    path = f"stages[{stage.id}]"
+    if len(stage.inputs) != 1:
+        findings.append((path, "piecewiseLinearScale requires exactly one input."))
+    output_unit = stage.params.get("outputUnit")
+    if output_unit is None:
+        findings.append(
+            (path, "piecewiseLinearScale requires an explicit params.outputUnit; the output unit must not be guessed.")
+        )
+    elif output_unit not in ("percent", "points", "grade", "scalar", "level"):
+        findings.append((path, f"piecewiseLinearScale params.outputUnit {output_unit!r} unknown."))
+    outside = stage.params.get("outsideRange")
+    if outside is None:
+        findings.append(
+            (path, "piecewiseLinearScale requires an explicit params.outsideRange (clamp|reject); never implicit.")
+        )
+    elif outside not in ("clamp", "reject"):
+        findings.append((path, f"piecewiseLinearScale params.outsideRange {outside!r} unknown."))
+    breakpoints = stage.params.get("breakpoints")
+    if not breakpoints or len(breakpoints) < 2:
+        findings.append((path, "piecewiseLinearScale requires at least two breakpoints."))
+    else:
+        last_x = None
+        seen = set()
+        for i, bp in enumerate(breakpoints):
+            if not isinstance(bp, dict) or "x" not in bp or "y" not in bp:
+                findings.append((path, f"breakpoint {i} must be {{'x', 'y'}}."))
+                continue
+            try:
+                x = Decimal(str(bp["x"]))
+                y = Decimal(str(bp["y"]))
+            except Exception:
+                findings.append((path, f"breakpoint {i} x/y must be valid decimals."))
+                continue
+            key = str(x)
+            if key in seen:
+                findings.append((path, f"piecewiseLinearScale has a duplicate x breakpoint at {key}."))
+            seen.add(key)
+            if last_x is not None and x <= last_x:
+                findings.append(
+                    (path, "piecewiseLinearScale x breakpoints must be strictly increasing.")
+                )
+            last_x = x
+    return findings
+
+
+def _scale(spec: StageSpec, x: Decimal) -> Decimal:
+    breakpoints: Sequence[dict] = spec.params.get("breakpoints", [])
+    if not breakpoints or len(breakpoints) < 2:
+        raise SchemaValidationError(
+            f"stages[{spec.id}].operator=piecewiseLinearScale: at least two breakpoints required."
+        )
+    points = []
+    for bp in breakpoints:
+        try:
+            points.append((Decimal(str(bp["x"])), Decimal(str(bp["y"]))))
+        except Exception as exc:
+            raise SchemaValidationError(
+                f"stages[{spec.id}].operator=piecewiseLinearScale: invalid breakpoint {bp!r}."
+            ) from exc
+    for i in range(1, len(points)):
+        if points[i][0] <= points[i - 1][0]:
+            raise SchemaValidationError(
+                f"stages[{spec.id}].operator=piecewiseLinearScale: x breakpoints must be strictly increasing."
+            )
+
+    lo_x, lo_y = points[0]
+    hi_x, hi_y = points[-1]
+
+    if x <= lo_x:
+        return lo_y
+    if x >= hi_x:
+        return hi_y
+    result = lo_y
+    for i in range(len(points) - 1):
+        x0, y0 = points[i]
+        x1, y1 = points[i + 1]
+        if x0 < x <= x1:
+            if x1 == x0:
+                result = y1
+            else:
+                t = (x - x0) / (x1 - x0)
+                result = y0 + t * (y1 - y0)
+            break
+    return run(lambda: result)
+
+
+def _check_outside(spec: StageSpec, x: Decimal) -> None:
+    breakpoints: Sequence[dict] = spec.params.get("breakpoints", [])
+    if not breakpoints:
+        return
+    first_x = Decimal(str(breakpoints[0]["x"]))
+    last_x = Decimal(str(breakpoints[-1]["x"]))
+    if x < first_x or x > last_x:
+        outside = spec.params.get("outsideRange")
+        if outside == "reject":
+            raise OutOfRangeError(
+                f"stages[{spec.id}].operator=piecewiseLinearScale: input {x} is outside "
+                f"the breakpoint range [{first_x}, {last_x}] and outsideRange=reject."
+            )
 
 
 def _evaluate(ctx, spec: StageSpec) -> EvalResult:
@@ -50,7 +157,10 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
         if policy == "notApplicable":
             return terminal_result(spec, [inp], "notApplicable", "required input is missing")
         if policy == "zero":
-            zero = ResolvedInput(ref=inp.ref, value=AcademicValue(DZERO, "percent"), state=VALUE)
+            output_unit = spec.params.get("outputUnit")
+            zero = ResolvedInput(
+                ref=inp.ref, value=AcademicValue(DZERO, output_unit), state=VALUE
+            )
             mds = [
                 MissingDecision(
                     ref=inp.ref,
@@ -62,9 +172,9 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
                 )
             ]
             value = zero.value
-            _result = _scale(spec, value.value)
+            result = _scale(spec, value.value)
             return EvalResult(
-                AcademicValue(_result, spec.params.get("outputUnit", "grade")),
+                AcademicValue(result, output_unit),
                 state=VALUE,
                 missing_decisions=mds,
             )
@@ -76,48 +186,15 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
         )
 
     value = inp.value
-    require_unit(value, "percent", spec.operator, spec.id)
+    output_unit = spec.params.get("outputUnit")
+    if output_unit is None:
+        raise SchemaValidationError(
+            f"stages[{spec.id}].operator=piecewiseLinearScale: params.outputUnit required."
+        )
 
+    _check_outside(spec, value.value)
     result = _scale(spec, value.value)
-    return EvalResult(AcademicValue(result, spec.params.get("outputUnit", "grade")), state=VALUE)
-
-
-def _scale(spec: StageSpec, x: Decimal) -> Decimal:
-    pairs: Sequence[dict] = spec.params.get("pairs", [])
-    if not pairs:
-        from ..errors import SchemaValidationError
-
-        raise SchemaValidationError(
-            f"stages[{spec.id}].operator=piecewiseLinearScale: params.pairs required."
-        )
-    if pairs[0].get("from") is not None:
-        from ..errors import SchemaValidationError
-
-        raise SchemaValidationError(
-            f"stages[{spec.id}].operator=piecewiseLinearScale: first pair 'from' must be null."
-        )
-
-    head_to = Decimal(str(pairs[0]["to"]))
-    pivots = [
-        (Decimal(str(p["from"])), Decimal(str(p["to"])))
-        for p in pairs
-        if p["from"] is not None
-    ]
-    tail_from, tail_to = pivots[-1]
-
-    if x <= pivots[0][0]:
-        return head_to
-    if x >= tail_from:
-        return tail_to
-    result = head_to
-    for i in range(len(pivots) - 1):
-        lo, lo_to = pivots[i]
-        hi, hi_to = pivots[i + 1]
-        if lo < x <= hi:
-            t = (x - lo) / (hi - lo)
-            result = lo_to + t * (hi_to - lo_to)
-            break
-    return run(lambda: result)
+    return EvalResult(AcademicValue(result, output_unit), state=VALUE)
 
 
 spec = OperatorSpec(
@@ -128,31 +205,32 @@ spec = OperatorSpec(
         "type": "object",
         "properties": {
             "outputUnit": {"enum": ["percent", "points", "grade", "scalar", "level"]},
-            "pairs": {
+            "breakpoints": {
                 "type": "array",
                 "minItems": 2,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "from": {
-                            "type": ["number", "null", "string"],
-                            "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
-                        },
-                        "to": {
-                            "type": ["number", "string"],
-                            "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
-                        },
+                        "x": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+                        "y": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
                     },
-                    "required": ["from", "to"],
+                    "required": ["x", "y"],
+                    "additionalProperties": False,
                 },
-            }
+            },
+            "outsideRange": {"enum": ["clamp", "reject"]},
         },
-        "required": ["pairs"],
+        "required": ["outputUnit", "breakpoints", "outsideRange"],
+        "additionalProperties": False,
     },
     allowed_phases=("conversion",),
-    accepted_input_units=("percent",),
+    accepted_input_units=("percent", "points", "grade", "scalar", "level"),
     resolve_output_unit=resolve_output_unit,
     allowed_missing_policies=("fail", "zero", "pending", "notApplicable"),
     evaluate=_evaluate,
-    description="Piecewise linear mapping of a percentage to an explicit output scale.",
+    min_inputs=1,
+    max_inputs=1,
+    weight_rule="forbidden",
+    semantic_validate=semantic_validate,
+    description="Piecewise linear mapping of the input value to an explicit output scale.",
 )

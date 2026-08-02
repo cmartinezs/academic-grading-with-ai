@@ -60,7 +60,8 @@ class UnitChainTest(unittest.TestCase):
             stages={
                 "w": stage("w", "aggregation", "weightedAverage",
                            [{"ref": "a", "weight": "0.5"}, {"ref": "b", "weight": "0.5"}]),
-                "cap": stage("cap", "adjustment", "cap", [{"ref": "w"}], params={"max": "80"}),
+                "cap": stage("cap", "adjustment", "cap", [{"ref": "w"}],
+                             params={"cap": {"value": "80", "unit": "percent"}}),
             },
         )
         loaded = load_policy(doc)
@@ -92,7 +93,8 @@ class UnitChainTest(unittest.TestCase):
             resultStageId="floor",
             stages={
                 "s": stage("s", "aggregation", "sum", [{"ref": "a"}, {"ref": "b"}]),
-                "floor": stage("floor", "adjustment", "floor", [{"ref": "s"}], params={"min": "0"}),
+                "floor": stage("floor", "adjustment", "floor", [{"ref": "s"}],
+                               params={"floor": {"value": "0", "unit": "points"}}),
             },
         )
         loaded = load_policy(doc)
@@ -108,7 +110,8 @@ class UnitChainTest(unittest.TestCase):
             stages={
                 "w": stage("w", "aggregation", "weightedAverage",
                            [{"ref": "a", "weight": "0.5"}, {"ref": "b", "weight": "0.5"}]),
-                "cap": stage("cap", "adjustment", "cap", [{"ref": "w"}], params={"max": "80"}),
+                "cap": stage("cap", "adjustment", "cap", [{"ref": "w"}],
+                             params={"cap": {"value": "80", "unit": "percent"}}),
             },
         )
         loaded = load_policy(doc)
@@ -125,7 +128,8 @@ class UnitChainTest(unittest.TestCase):
                 "scale": stage(
                     "scale", "conversion", "piecewiseLinearScale", [{"ref": "a"}],
                     params={"outputUnit": "grade",
-                            "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]},
+                            "outsideRange": "clamp",
+                            "breakpoints": [{"x": "0", "y": "1"}, {"x": "50", "y": "4"}]},
                 ),
             },
         )
@@ -136,17 +140,15 @@ class UnitChainTest(unittest.TestCase):
 
 class UnitValidationTest(unittest.TestCase):
     def test_static_mismatch_rejected(self) -> None:
-        # piecewiseLinearScale emits grade; a second piecewiseLinearScale
-        # requires percent as input -> static mismatch.
+        # piecewiseLinearScale emits level; a round stage cannot read a level.
         doc = policy(
-            resultStageId="scale2",
+            resultStageId="r",
             stages={
                 "scale1": stage("scale1", "conversion", "piecewiseLinearScale", [{"ref": "a"}],
-                                params={"outputUnit": "grade",
-                                        "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}),
-                "scale2": stage("scale2", "conversion", "piecewiseLinearScale", [{"ref": "scale1"}],
-                                params={"outputUnit": "grade",
-                                        "pairs": [{"from": None, "to": 1}, {"from": 4, "to": 7}]}),
+                                params={"outputUnit": "level",
+                                        "outsideRange": "clamp",
+                                        "breakpoints": [{"x": "0", "y": "1"}, {"x": "7", "y": "1"}]}),
+                "r": stage("r", "finalization", "round", [{"ref": "scale1"}], params={"decimalPlaces": 1}),
             },
         )
         with self.assertRaises(SemanticValidationError):
@@ -175,7 +177,8 @@ class UnitValidationTest(unittest.TestCase):
             resultStageId="scale",
             stages={
                 "scale": stage("scale", "conversion", "piecewiseLinearScale", [{"ref": "a"}],
-                               params={"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}),
+                               params={"outsideRange": "clamp",
+                                       "breakpoints": [{"x": "0", "y": "1"}, {"x": "50", "y": "4"}]}),
             },
         )
         with self.assertRaises(SemanticValidationError):

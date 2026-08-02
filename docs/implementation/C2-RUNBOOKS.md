@@ -200,5 +200,7 @@ Un build C2 fallido nunca deja un snapshot parcial bajo
 ```
 
 Ejecuta la suite unittest de C2 (conformance, DAG/condiciones, unidades,
-missing policies, estados tipados, trazas, property, integración de snapshot,
-inyección de fallos) y un escenario E2E sintético de `calculate`.
+missing policies, estados tipados, trazas, property, paridad con los ejemplos
+oficiales del contrato, introspección de specs de operadores, sin errores
+crudos en runtime, integración de snapshot, inyección de fallos) y un escenario
+E2E sintético de `calculate`.

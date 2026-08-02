@@ -202,7 +202,7 @@ class UnitPropagationPropertyTest(unittest.TestCase):
                         "phase": "adjustment",
                         "operator": "cap",
                         "inputs": [{"ref": "w"}],
-                        "params": {"max": "100"},
+                        "params": {"cap": {"value": "100", "unit": unit}},
                     },
                     "final": {
                         "id": "final",

@@ -104,7 +104,7 @@ class PropagationTest(unittest.TestCase):
                 "final": stage(
                     "final", "finalization", "round", [{"ref": "w"}],
                     params={"decimalPlaces": 1}, missingPolicy="pending",
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )

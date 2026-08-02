@@ -63,6 +63,8 @@ def trace_dict(outcome: EngineOutcome, section_id: Optional[str] = None) -> dict
             stage_payload["missingDecisions"] = [md.to_dict() for md in ev.missing_decisions]
         if ev.condition_decision is not None:
             stage_payload["condition"] = ev.condition_decision
+        if ev.operator_data is not None:
+            stage_payload["operatorData"] = ev.operator_data
         if ev.decisions:
             stage_payload["decisions"] = list(ev.decisions)
         if ev.warnings:

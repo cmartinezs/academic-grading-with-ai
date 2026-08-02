@@ -132,6 +132,7 @@ def _evaluate_stage(ctx: EvalContext, spec: StageSpec) -> StageEvaluation:
         output=result.value,
         decisions=tuple(result.decisions),
         warnings=tuple(result.warnings),
+        operator_data=result.operator_data,
     )
 
 

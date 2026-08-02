@@ -22,6 +22,7 @@ from typing import Mapping, Optional, Sequence
 
 from .errors import CycleError, StageReferenceError
 from .models import Policy, StageSpec
+from .registry import require_operator
 
 
 class Plan:
@@ -48,9 +49,24 @@ def condition_refs(stage: StageSpec) -> Sequence[str]:
     return ()
 
 
+def operator_refs(stage: StageSpec) -> Sequence[str]:
+    """Refs an operator declares through its params (target/source etc.).
+
+    ``additiveBonus`` and ``replaceLowestInput`` reference entities via
+    ``params`` and not only ``stage.inputs``; those references are first-class
+    DAG edges and must participate in unknown-ref validation, cycle detection,
+    phase ordering, reachability, topological ordering and unit propagation.
+    """
+    refs = []
+    for op_ref in require_operator(stage.operator).references(stage):
+        refs.append(op_ref.ref)
+    return refs
+
+
 def _references(stage: StageSpec) -> Sequence[str]:
     refs = [inp.ref for inp in stage.inputs]
     refs.extend(condition_refs(stage))
+    refs.extend(operator_refs(stage))
     return refs
 
 

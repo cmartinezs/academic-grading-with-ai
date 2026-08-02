@@ -89,6 +89,7 @@
           }
         },
         "output": { "$ref": "#/$defs/academicValue" },
+        "operatorData": { "type": "object" },
         "decisions": { "type": "array", "items": { "type": "string" } },
         "warnings": { "type": "array", "items": { "type": "string" } }
       }

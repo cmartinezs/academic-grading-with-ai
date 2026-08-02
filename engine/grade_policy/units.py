@@ -2,9 +2,12 @@
 
 ``propagate_units`` computes the output unit of every stage using each
 operator's ``resolve_output_unit`` and the units declared for assessments in
-the policy. A stage whose output unit cannot be decided statically (because an
-assessment has no declared unit) yields ``None``: the engine never claims a
-static unit that could differ from the runtime one.
+the policy. The full unit map (assessments + already-resolved stages) is passed
+to every ``resolve_output_unit`` so operators that reference entities through
+params (``additiveBonus``/``replaceLowestInput``) can resolve their
+``target``/``source`` units too. A stage whose output unit cannot be decided
+statically (because an assessment has no declared unit) yields ``None``: the
+engine never claims a static unit that could differ from the runtime one.
 """
 
 from __future__ import annotations
@@ -31,6 +34,5 @@ def propagate_units(policy: Policy) -> Mapping[str, Optional[str]]:
     for sid in order:
         stage = policy.stages[sid]
         spec = require_operator(stage.operator)
-        input_units = {inp.ref: units.get(inp.ref) for inp in stage.inputs}
-        units[sid] = spec.resolve_output_unit(stage, input_units)
+        units[sid] = spec.resolve_output_unit(stage, units)
     return units

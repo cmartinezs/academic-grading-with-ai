@@ -2,27 +2,28 @@
 
 Corte **C2 — Grade Policy Engine** (motor determinista de políticas de
 calificación), branch `feat/c2-grade-policy-engine`. Este reporte cubre la
-segunda iteración de C2: corrección de inconsistencias semánticas (aristas de
-condición en el DAG, propagación tipada de unidades, matriz exacta de missing
-policies y estados tipados por stage). Motor `0.2.0`; `outcomes`/`traces` en
-schema `1.1.0` (aditivo; 1.0.0 conservado y aún válido).
+tercera iteración de C2: cierre de la divergencia entre el contrato y la
+implementación (params tipados de operadores, condiciones unit-aware, aristas de
+refs de operador en el DAG, paridad contra los ejemplos oficiales del contrato,
+sin errores crudos en runtime). Motor `0.2.0`; `outcomes`/`traces` en schema
+`1.1.0` (aditivo; 1.0.0 conservado y aún válido).
 
 ## Base
 
 - `master` en el estado de C1 (C1 119 tests + E2E OK, C0 92 tests OK, scan
   estricto `BLOCK=0 REVIEW=0`).
 - Rama `feat/c2-grade-policy-engine` sobre `master`; PR #5 (open, mergeable).
-- Head verificado: `1ad0e5e` (contiene este reporte).
+- Head verificado: `f26ba5c` (contiene este reporte).
 
 ## Resultado
 
 | Check | Resultado |
 |---|---|
-| C2 suite unittest (107 tests: schema/semantic gates, DAG + aristas de condición, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0, determinismo Decimal, integración de snapshot, inyección de fallos) | `OK` |
+| C2 suite unittest (159 tests: schema/semantic gates, DAG + aristas de condición y de refs de operador, paridad con los ejemplos oficiales del contrato, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0 con `operatorData`, determinismo Decimal, integración de snapshot, inyección de fallos, introspección de specs de operadores, sin errores crudos en runtime) | `OK` |
 | C2 self-check E2E sintético (`calculate` weightedAverage + round → `SUBJ-E2E → 76`) | `OK` |
 | Regresión C1 (119 tests + E2E synthetic) | `OK` |
 | Regresión C0 (92 tests) | `OK` |
-| Scan tracked estricto (`c0-scan.sh --tracked --strict`) | `BLOCK=0 REVIEW=0` (227 archivos) |
+| Scan tracked estricto (`c0-scan.sh --tracked --strict`) | `BLOCK=0 REVIEW=0` |
 | `git diff --check master...HEAD` | limpio |
 | Dependencia | `jsonschema==4.10.3` pinneada en `engine/grade_policy/requirements.txt` |
 | CI remoto | `.github/workflows/c2.yml` (suite C2, regresión C1, regresión C0, scan estricto) — ver § CI |
@@ -41,21 +42,34 @@ schema `1.1.0` (aditivo; 1.0.0 conservado y aún válido).
   `version`, `serialize`, `trace` (1.1.0: `resultState`, `finalizable`,
   `missingDecisions`, estados por input), `snapshot`, `engine` (ejecución pura
   con propagación de estados y motivos), `errors` tipados.
-- `engine/grade_policy/operators/`: `base` (`OperatorSpec.resolve_output_unit`,
-  helpers de missing policies) + 8 operadores V1 reescritos con su matriz exacta
-  de missing policies.
+- `engine/grade_policy/operators/`: `base` (`OperatorSpec` ampliado con
+  `OperatorReference`/`referenced_refs`/`min_inputs`/`max_inputs`/`weight_rule`/
+  `semantic_validate`) + 8 operadores V1 con params tipados según el contrato:
+  `cap`/`floor` con bounds `{value, unit}` obligatorios, `sum` con `cap`/`floor`
+  opcionales tipados, `piecewiseLinearScale` con `breakpoints [{x,y}]` +
+  `outputUnit` + `outsideRange` (clamp/reject, `OutOfRangeError`),
+  `additiveBonus` con `target`/`source`/`cap`, `replaceLowestInput` con
+  `target`/`source`/`tiePolicy` (recalcula el promedio ponderado del target,
+  nunca una suma), `weightedAverage` sin `params.weights` (pesos solo en
+  `InputRef`), `round` con `decimalPlaces` o `quantum`. `EvalResult`/traces
+  registran `operatorData` por stage.
+- `engine/grade_policy/conditions.py`: 6 condiciones unit-aware (`statusEquals`/
+  `assessmentPresent`/`assessmentMissing` con ref=assessment; `scoreAtLeast`/
+  `scoreBelow` con threshold `{value, unit}`; `levelAtLeast` con `level` y
+  catálogo `levels` opcional); `CONDITION_REF_KINDS`.
 - `engine/grade_policy/schemas/`: `policy.schema.json` (con `assessmentUnits`),
-  `outcomes-1.1.0.schema.json` y `traces-1.1.0.schema.json` (nuevos) +
-  versiones 1.0.0 intactas; selector por `schemaVersion` (fail-closed).
+  `outcomes-1.1.0.schema.json` y `traces-1.1.0.schema.json` (nuevos, `operatorData`
+  permitido) + versiones 1.0.0 intactas; selector por `schemaVersion` (fail-closed).
 - Integración publicación (aditiva): hook `build_c2_payloads`; verifier
   mode-aware que valida los artefactos C2 contra el schema `1.1.0` declarado.
 - CLI `engine/scripts/grade_policy.py` (0.2.0) + wrapper
   `scripts/grade-policy.sh`; `explain` imprime estados tipados y
   `missingDecisions`; `calculate` emite `1.1.0` con `resultState`/`finalizable`.
-- Tests (7 archivos): `test_conformance.py`, `test_property.py`
+- Tests (9 archivos): `test_conformance.py`, `test_property.py`
   (incluye propagación de unidades), `test_dag_conditions.py`,
   `test_units.py`, `test_missing_policies.py`, `test_states.py`,
-  `test_snapshot_integration.py`.
+  `test_snapshot_integration.py`, `test_contract_parity.py`,
+  `test_no_unhandled_exceptions.py`, `test_operator_specs.py`.
 - Docs: plan, contrato, runbooks y este reporte.
 
 ## Gates
@@ -63,14 +77,23 @@ schema `1.1.0` (aditivo; 1.0.0 conservado y aún válido).
 - Schema (Draft 2020-12): policy `1.0.0`; outcomes/traces `1.1.0` (y `1.0.0`
   conservado); major desconocida falla cerrado.
 - Semántico:
-  - pesos suman 1, refs existen, `resultStageId` alcanzable, sin ciclos
-    (incluyendo aristas de condición), sin dependencias hacia fases posteriores;
+  - pesos suman 1 (solo `weightedAverage`; pesos prohibidos en el resto), refs
+    existen, `resultStageId` alcanzable, sin ciclos (incluyendo aristas de
+    condición y de refs de operador), sin dependencias hacia fases posteriores,
+    aridad por operador, refs de input duplicados;
+  - params tipados por operador: `cap`/`floor`/`sum cap|floor` con `{value, unit}`,
+    `piecewiseLinearScale` con `outputUnit` + `breakpoints` crecientes +
+    `outsideRange`, `additiveBonus`/`replaceLowestInput` con refs existentes y
+    unidades compatibles, `replaceLowestInput` con target `weightedAverage` y
+    `tiePolicy` válido;
   - unidad tipada: `assessmentUnits` declaradas, unidad estática == unidad de
     runtime (`UnitMismatchError` en caso contrario), sin adivinanzas;
-  - `piecewiseLinearScale` exige `params.outputUnit`; `minimumOutput` exige
-    `params.minimum {value, unit}`;
+  - `minimumOutput` exige `params.minimum {value, unit}` con unidad del stage;
   - `missingPolicy` dentro de la matriz exacta del operador;
-  - condición con `params.ref` inexistente → fallo cerrado.
+  - condición con `params.ref` inexistente → fallo cerrado; ref-kind por
+    condición (`assessment` para `statusEquals`/`assessmentPresent`/
+    `assessmentMissing`); threshold tipado; `levelAtLeast` exige unidad `level` y
+    `level` ∈ catálogo `levels` cuando está presente.
 - Runtime: unidades mezcladas conocidas rechazadas; `zero` rellena con la
   unidad esperada del stage (nunca una unidad global); sin inputs presentes con
   unidad no declarada → error tipado.
@@ -120,6 +143,26 @@ Propagación hacia abajo con motivo (p. ej. `pending` por `missing` upstream);
 - Compatibilidad: camino legacy sin `--grade-policy` byte-compatible; schemas
   C1 intactos; verifier aditivo por `mode`/versión.
 
+## Paridad con el ejemplo oficial (§2)
+
+El documento oficial del contrato se ejercita verbatim en
+`test_contract_parity.py`. Dos tensiones internas del contrato se resuelven a
+favor de disposiciones más claras:
+
+- `condition` vive en `stage.condition`, no dentro de `params` (§2 Reglas del
+  documento y §7 definen la condición como puerta de stage de primera clase;
+  duplicarla en `params` rompería la única ubicación). Un `condition` dentro de
+  `params` es rechazado.
+- La fuente `EvG` del ejemplo es `level` mientras los candidatos del target son
+  `percent`. §13 prohíbe mezclar unidades conocidas en un stage homogéneo y §6
+  exige conservar la unidad del target; el motor rechaza esa mezcla en
+  validación (mensaje `incompatible with candidate`) en lugar de fallar en
+  runtime. La variante unit-coherente del pipeline se ejecuta end-to-end
+  (evidencia esperada `5.56`).
+
+Además, `levelAtLeast` acepta el catálogo `levels` (§7) y valida que `level`
+pertenezca a él.
+
 ## Commits
 
 Iteración 1 (base, pre-fix):
@@ -138,9 +181,12 @@ Iteración 1 (base, pre-fix):
 - `2db987f` ci: add C2 grade policy engine gates
 - `796b6eb` docs: add C2 runbooks and verification report
 
-Iteración 2 (este reporte): fixes de consistencia semántica (DAG/condiciones,
-unidades tipadas, missing policies, estados), engine `0.2.0`, schemas `1.1.0`,
-4 suites nuevas y docs actualizadas.
+Iteración 3 (este reporte): cierre de la divergencia contrato ↔ implementación
+(params tipados, condiciones unit-aware, refs de operador como aristas, paridad
+con ejemplos oficiales, sin errores crudos en runtime), suites nuevas
+(`test_contract_parity.py`, `test_no_unhandled_exceptions.py`,
+`test_operator_specs.py`) y docs actualizadas. Commits a continuación de la
+iteración 2 en el PR #5.
 
 - `1ad0e5e` feat: harden C2 engine semantics (typed units, states, missing policies)
 
@@ -161,4 +207,7 @@ unidades tipadas, missing policies, estados), engine `0.2.0`, schemas `1.1.0`,
 - `level` participa en condiciones `levelAtLeast`; no hay operaciones
   aritméticas sobre unidades `level`.
 - La matriz exacta se impone en validación semántica (no expresable en JSON
-  Schema); quedó cubierta por `test_missing_policies.py`.
+  Schema); quedó cubierta por `test_missing_policies.py` y
+  `test_contract_parity.py`.
+- El ejemplo oficial §2 mezcla `level`/`percent` en `replaceLowestInput`; se
+  rechaza en validación (resolución documentada en § Paridad).

@@ -65,7 +65,7 @@ class ConditionRefTest(unittest.TestCase):
                     "round",
                     [{"ref": "w"}],
                     params={"decimalPlaces": 1},
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -84,7 +84,7 @@ class ConditionRefTest(unittest.TestCase):
                     "round",
                     [{"ref": "w"}],
                     params={"decimalPlaces": 1},
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -104,7 +104,7 @@ class ConditionRefTest(unittest.TestCase):
                     "round",
                     [{"ref": "w"}],
                     params={"decimalPlaces": 1},
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -123,7 +123,7 @@ class ConditionRefTest(unittest.TestCase):
                     "normalization",
                     "sum",
                     [{"ref": "agg"}],
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "agg", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "agg", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -151,7 +151,7 @@ class ConditionRefTest(unittest.TestCase):
                     "round",
                     [{"ref": "x"}],
                     params={"decimalPlaces": 1},
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "ghost", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "ghost", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -184,14 +184,14 @@ class ConditionRefTest(unittest.TestCase):
                     "aggregation",
                     "sum",
                     [{"ref": "x"}],
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "b", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "b", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
                 "b": stage(
                     "b",
                     "aggregation",
                     "sum",
                     [{"ref": "x"}],
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "a", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "a", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )
@@ -226,7 +226,7 @@ class ConditionRefTest(unittest.TestCase):
                     "round",
                     [{"ref": "x"}],
                     params={"decimalPlaces": 1},
-                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": "50"}},
+                    condition={"kind": "scoreAtLeast", "params": {"ref": "w", "threshold": {"value": "50", "unit": "percent"}}},
                 ),
             },
         )

@@ -5,33 +5,31 @@ Conditions gate a stage: the stage is skipped (output remains None, not
 runs normally.
 
 Closed set (V1):
-- statusEquals
-- levelAtLeast
-- assessmentPresent
-- assessmentMissing
-- scoreAtLeast
-- scoreBelow
+- statusEquals       -> compares AssessmentInput.status; ref must be an assessment
+- levelAtLeast       -> reads an AcademicValue; requires unit=level; compares value
+- assessmentPresent  -> ref must be an assessment
+- assessmentMissing  -> ref must be an assessment
+- scoreAtLeast       -> unit-aware threshold; ref assessment or stage with value
+- scoreBelow         -> unit-aware threshold; ref assessment or stage with value
 
 Each condition is a pure predicate: ``(ctx, spec) -> (bool, reason)``.
+
+Reference-kind rules (validated in the validator):
+- statusEquals / assessmentPresent / assessmentMissing: ref must be an
+  assessment (for stages, a different condition is introduced in a future
+  version; no overloaded semantics here);
+- scoreAtLeast / scoreBelow: ref may be an assessment or a stage with a value;
+- levelAtLeast: ref may be an assessment (typically) or a stage producing
+  ``level``; the unit must be ``level`` (no implicit conversion).
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from .decimal import Decimal
+from .decimal import Decimal, to_decimal
+from .errors import UnitMismatchError
 from .models import EvalContext, StageSpec
-
-
-def _status(ctx: EvalContext, ref: str) -> Optional[str]:
-    if ref in ctx.policy.stages:
-        return None
-    return ctx.inputs.get(ref).status if ctx.inputs.get(ref) else None
-
-
-def _value(ctx: EvalContext, ref: str):
-    return ctx.resolve(ref)
-
 
 CONDITION_NAMES = (
     "statusEquals",
@@ -42,28 +40,62 @@ CONDITION_NAMES = (
     "scoreBelow",
 )
 
+CONDITION_REF_KINDS: dict[str, str] = {
+    "statusEquals": "assessment",
+    "levelAtLeast": "either",
+    "assessmentPresent": "assessment",
+    "assessmentMissing": "assessment",
+    "scoreAtLeast": "either",
+    "scoreBelow": "either",
+}
+
+_DECIMAL_PATTERN = {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"}
+_UNIT_ENUM = {"enum": ["percent", "points", "grade", "scalar", "level"]}
+
+_ACADEMIC_VALUE_SCHEMA = {
+    "type": "object",
+    "required": ["value", "unit"],
+    "properties": {"value": _DECIMAL_PATTERN, "unit": _UNIT_ENUM},
+    "additionalProperties": False,
+}
+
+
+def _status(ctx: EvalContext, ref: str) -> Optional[str]:
+    if ref in ctx.policy.stages:
+        return None
+    assessment = ctx.inputs.get(ref)
+    return assessment.status if assessment is not None else None
+
 
 def evaluate_status_equals(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[bool, str]:
-    status = _status(ctx, params["ref"])
+    ref = params["ref"]
+    status = _status(ctx, ref)
     expected = params["status"]
-    return (status == expected), f"statusEquals({params['ref']})={status!r} vs {expected!r}"
+    ok = status == expected
+    return ok, f"statusEquals({ref})={status!r} vs {expected!r}"
+
+
+def _level_value(params: dict) -> Decimal:
+    target = params["level"]
+    if isinstance(target, dict):
+        if target.get("unit") != "level":
+            raise UnitMismatchError(
+                f"levelAtLeast: target unit {target.get('unit')!r} must be 'level'."
+            )
+        return to_decimal(target["value"])
+    return to_decimal(target)
 
 
 def evaluate_level_at_least(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[bool, str]:
     ref = params["ref"]
-    level = params.get("level", params.get("value"))
-    status = _status(ctx, ref)
-    if status is None:
-        return False, f"levelAtLeast({ref}): no status"
-    levels = params.get("levels")
-    if levels is None:
-        return False, f"levelAtLeast({ref}): no ordered levels provided"
-    if status not in levels:
-        return False, f"levelAtLeast({ref}): unknown status {status!r}"
-    if level not in levels:
-        return False, f"levelAtLeast({ref}): unknown target level {level!r}"
-    ok = levels.index(status) >= levels.index(level)
-    return ok, f"levelAtLeast({ref})={status} >= {level}: {ok}"
+    value = ctx.resolve(ref)
+    if value is None:
+        return False, f"levelAtLeast({ref}): no value (fail-closed)"
+    if value.unit != "level":
+        return False, f"levelAtLeast({ref}): unit {value.unit!r} is not 'level' (no implicit conversion)"
+    target_value = _level_value(params)
+    ok = value.value >= target_value
+    return ok, f"levelAtLeast({ref})={value.value} >= {target_value}: {ok}"
 
 
 def evaluate_present(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[bool, str]:
@@ -78,22 +110,41 @@ def evaluate_missing(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[b
     return (not present), f"assessmentMissing({ref})={not present}"
 
 
+def _threshold_value(params: dict) -> tuple[Decimal, str]:
+    threshold = params["threshold"]
+    if not isinstance(threshold, dict) or "value" not in threshold or "unit" not in threshold:
+        raise UnitMismatchError(
+            "score conditions require a typed threshold {value, unit}; no implicit conversion."
+        )
+    return to_decimal(threshold["value"]), threshold["unit"]
+
+
 def evaluate_score_at_least(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[bool, str]:
     ref = params["ref"]
-    threshold = Decimal(str(params["threshold"]))
+    threshold, unit = _threshold_value(params)
     value = ctx.resolve(ref)
     if value is None:
-        return False, f"scoreAtLeast({ref}): no value"
+        return False, f"scoreAtLeast({ref}): no value (fail-closed)"
+    if value.unit != unit:
+        raise UnitMismatchError(
+            f"scoreAtLeast({ref}): threshold unit {unit!r} != value unit {value.unit!r} "
+            "(no implicit conversion)."
+        )
     ok = value.value >= threshold
     return ok, f"scoreAtLeast({ref})={value.value} >= {threshold}: {ok}"
 
 
 def evaluate_score_below(ctx: EvalContext, spec: StageSpec, params: dict) -> tuple[bool, str]:
     ref = params["ref"]
-    threshold = Decimal(str(params["threshold"]))
+    threshold, unit = _threshold_value(params)
     value = ctx.resolve(ref)
     if value is None:
-        return False, f"scoreBelow({ref}): no value"
+        return False, f"scoreBelow({ref}): no value (fail-closed)"
+    if value.unit != unit:
+        raise UnitMismatchError(
+            f"scoreBelow({ref}): threshold unit {unit!r} != value unit {value.unit!r} "
+            "(no implicit conversion)."
+        )
     ok = value.value < threshold
     return ok, f"scoreBelow({ref})={value.value} < {threshold}: {ok}"
 
@@ -126,10 +177,24 @@ CONDITION_PARAM_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
-            "level": {"type": "string"},
-            "levels": {"type": "array", "items": {"type": "string"}},
+            "level": {
+                "anyOf": [
+                    _DECIMAL_PATTERN,
+                    {
+                        "type": "object",
+                        "required": ["value", "unit"],
+                        "properties": {"value": _DECIMAL_PATTERN, "unit": _UNIT_ENUM},
+                        "additionalProperties": False,
+                    },
+                ]
+            },
+            "levels": {
+                "type": "array",
+                "items": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$"},
+                "minItems": 1,
+            },
         },
-        "required": ["ref", "level", "levels"],
+        "required": ["ref", "level"],
         "additionalProperties": False,
     },
     "assessmentPresent": {
@@ -148,10 +213,7 @@ CONDITION_PARAM_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
-            "threshold": {
-                "type": ["number", "string"],
-                "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
-            },
+            "threshold": _ACADEMIC_VALUE_SCHEMA,
         },
         "required": ["ref", "threshold"],
         "additionalProperties": False,
@@ -160,10 +222,7 @@ CONDITION_PARAM_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "ref": {"type": "string"},
-            "threshold": {
-                "type": ["number", "string"],
-                "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
-            },
+            "threshold": _ACADEMIC_VALUE_SCHEMA,
         },
         "required": ["ref", "threshold"],
         "additionalProperties": False,

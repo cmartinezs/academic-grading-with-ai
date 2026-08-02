@@ -1,61 +1,184 @@
-"""replaceLowestInput: replace the lowest present value with a constant."""
+"""replaceLowestInput: replace the lowest present input of a target
+``weightedAverage`` stage with a source value, then recompute the average.
+
+Contract (C2-GRADE-POLICY-CONTRACT.md §6):
+
+- ``params.target`` must reference a stage whose operator is ``weightedAverage``;
+- ``params.source`` must reference an existing assessment or stage;
+- ``params.tiePolicy`` ∈ {``replaceFirst``, ``replaceLast``};
+- the gate condition (e.g. ``levelAtLeast``) lives in ``stage.condition`` — the
+  only place conditions are kept; when the condition is not satisfied the stage
+  is ``skippedCondition``;
+- exactly one candidate is replaced; the average is recomputed with the same
+  effective weights; the output is a weighted average, never a sum;
+- no constant replacement is accepted.
+
+The ``target``/``source`` reference edges are first-class DAG dependencies.
+"""
 
 from __future__ import annotations
 
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
-from ..decimal import Decimal, run
-from ..models import AcademicValue, EvalResult, StageSpec
+from ..decimal import DZERO, Decimal, decimal_str, run
+from ..models import AcademicValue, EvalResult, Policy, StageSpec
 from .base import (
     VALUE,
+    OperatorReference,
     OperatorSpec,
-    common_output_unit,
-    missing_policy_for,
-    raise_missing,
+    apply_missing,
     require_same_unit,
-    resolve_inputs,
-    split_present,
-    terminal_result,
+    resolve_refs,
 )
+from ..errors import MissingInputError, SchemaValidationError
 
 
 def resolve_output_unit(
-    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+    stage: StageSpec, units: Mapping[str, Optional[str]]
 ) -> Optional[str]:
-    return common_output_unit(stage, input_units)
+    return units.get(stage.params.get("target", ""))
+
+
+def referenced_refs(stage: StageSpec) -> Sequence[OperatorReference]:
+    refs = []
+    if stage.params.get("target"):
+        refs.append(OperatorReference(stage.params["target"], "target", "stage", True))
+    if stage.params.get("source"):
+        refs.append(OperatorReference(stage.params["source"], "source", "either", True))
+    return refs
+
+
+def semantic_validate(
+    stage: StageSpec, policy: Policy, units: Mapping[str, Optional[str]]
+) -> Sequence[tuple[str, str]]:
+    findings: list[tuple[str, str]] = []
+    target = stage.params.get("target")
+    if target is not None and target not in policy.stages:
+        findings.append(
+            (f"stages[{stage.id}]", f"replaceLowestInput target {target!r} must be a stage.")
+        )
+    elif target in policy.stages:
+        target_stage = policy.stages[target]
+        if target_stage.operator != "weightedAverage":
+            findings.append(
+                (
+                    f"stages[{stage.id}]",
+                    f"replaceLowestInput target {target!r} must be a weightedAverage "
+                    f"stage; got operator {target_stage.operator!r}.",
+                )
+            )
+    source = stage.params.get("source")
+    if source is not None and source not in policy.stages and source not in policy.assessments:
+        findings.append(
+            (f"stages[{stage.id}]", f"replaceLowestInput source {source!r} is neither a stage nor an assessment.")
+        )
+    tie_policy = stage.params.get("tiePolicy")
+    if tie_policy is not None and tie_policy not in ("replaceFirst", "replaceLast"):
+        findings.append(
+            (f"stages[{stage.id}]", f"replaceLowestInput tiePolicy {tie_policy!r} must be replaceFirst or replaceLast.")
+        )
+    if target in policy.stages:
+        target_stage = policy.stages[target]
+        if target_stage.operator == "weightedAverage":
+            source_unit = units.get(source) if source else None
+            for inp in target_stage.inputs:
+                cand_unit = units.get(inp.ref)
+                if (
+                    source_unit is not None
+                    and cand_unit is not None
+                    and cand_unit != source_unit
+                ):
+                    findings.append(
+                        (
+                            f"stages[{stage.id}]",
+                            f"replaceLowestInput source {source!r} ({source_unit}) is "
+                            f"incompatible with candidate {inp.ref!r} ({cand_unit}); "
+                            "no implicit conversion.",
+                        )
+                    )
+    return findings
 
 
 def _evaluate(ctx, spec: StageSpec) -> EvalResult:
-    resolved = resolve_inputs(ctx, spec)
-    present, missing = split_present(resolved)
-    policy = missing_policy_for(spec)
+    target = spec.params["target"]
+    source = spec.params["source"]
+    tie_policy = spec.params.get("tiePolicy", "replaceFirst")
 
-    if missing:
-        if policy == "fail":
-            raise_missing(spec, missing)
-        if policy == "pending":
-            return terminal_result(spec, missing, "pending", "required input is missing")
-        if policy == "notApplicable":
-            return terminal_result(spec, missing, "notApplicable", "required input is missing")
-        from ..errors import MissingPolicyError
-
-        raise MissingPolicyError(
-            f"stages[{spec.id}].operator={spec.operator}: missingPolicy {policy!r} is not "
-            "implemented for replaceLowestInput."
+    target_stage = ctx.policy.stages[target]
+    if target_stage.operator != "weightedAverage":
+        raise SchemaValidationError(
+            f"stages[{spec.id}].operator=replaceLowestInput: target {target!r} must be "
+            "a weightedAverage stage."
         )
 
-    require_same_unit([r.value for r in present], spec.operator, spec.id)
+    # Resolve the source first so its missing state follows the operator's policy.
+    src_resolved = resolve_refs(ctx, spec, [source])
+    _, _mds, terminal = apply_missing(ctx, spec, src_resolved)
+    if terminal is not None:
+        return terminal
+    source_value = src_resolved[0].value
 
-    replacement = Decimal(str(spec.params.get("replacement", "0")))
-    min_value = min(v.value.value for v in present)
+    candidate_refs = [inp.ref for inp in target_stage.inputs]
+    weights = {inp.ref: (inp.weight or DZERO) for inp in target_stage.inputs}
 
-    def _replace():
-        return sum(v.value.value for v in present) - min_value + replacement
+    candidate_values = {}
+    for ref in candidate_refs:
+        value, state, reason = ctx.resolve_ref(ref)
+        if state != VALUE:
+            raise MissingInputError(
+                f"stages[{spec.id}].operator=replaceLowestInput: target candidate {ref!r} "
+                f"is not present ({state}: {reason or 'missing'})."
+            )
+        candidate_values[ref] = value
 
-    result = run(_replace)
+    values = list(candidate_values.values())
+    require_same_unit(values + [source_value], spec.operator, spec.id)
+
+    if not candidate_values:
+        raise SchemaValidationError(
+            f"stages[{spec.id}].operator=replaceLowestInput: target {target!r} declares no inputs."
+        )
+
+    # Select exactly one candidate: the lowest present value. On ties the
+    # tiePolicy decides which occurrence is replaced.
+    minima = [ref for ref in candidate_refs if candidate_values[ref].value == min(
+        candidate_values[r].value for r in candidate_refs
+    )]
+    if tie_policy == "replaceFirst":
+        selected_ref = minima[0]
+    else:  # replaceLast
+        selected_ref = minima[-1]
+
+    original_value = candidate_values[selected_ref]
+
+    def _recompute():
+        total = DZERO
+        for ref in candidate_refs:
+            value = source_value.value if ref == selected_ref else candidate_values[ref].value
+            total += value * (weights[ref] or DZERO)
+        return total
+
+    result = run(_recompute)
+    output = AcademicValue(result, original_value.unit)
+
+    operator_data = {
+        "candidateRefs": list(candidate_refs),
+        "selectedRef": selected_ref,
+        "originalValue": original_value.to_dict(),
+        "replacementValue": source_value.to_dict(),
+        "tiePolicy": tie_policy,
+        "weights": {ref: decimal_str(weights[ref]) for ref in candidate_refs},
+        "recalculatedOutput": output.to_dict(),
+    }
+    decisions = [
+        f"replaceLowestInput: selected {selected_ref} (min {decimal_str(original_value.value)}) "
+        f"replaced with {source}={decimal_str(source_value.value)}"
+    ]
     return EvalResult(
-        AcademicValue(result, present[0].value.unit),
+        value=output,
         state=VALUE,
+        decisions=decisions,
+        operator_data=operator_data,
     )
 
 
@@ -65,13 +188,23 @@ spec = OperatorSpec(
     min_engine_version="0.2.0",
     params_schema={
         "type": "object",
-        "properties": {"replacement": {"type": ["number", "string"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$"}},
+        "properties": {
+            "target": {"type": "string"},
+            "source": {"type": "string"},
+            "tiePolicy": {"enum": ["replaceFirst", "replaceLast"]},
+        },
+        "required": ["target", "source", "tiePolicy"],
         "additionalProperties": False,
     },
-    allowed_phases=("aggregation", "adjustment"),
+    allowed_phases=("adjustment",),
     accepted_input_units=("points", "percent", "grade", "scalar"),
     resolve_output_unit=resolve_output_unit,
     allowed_missing_policies=("fail", "pending", "notApplicable"),
     evaluate=_evaluate,
-    description="Replaces the lowest present input with a constant, preserving the sum of the others.",
+    referenced_refs=referenced_refs,
+    min_inputs=0,
+    max_inputs=0,
+    weight_rule="forbidden",
+    semantic_validate=semantic_validate,
+    description="Replaces the lowest present input of a weightedAverage target with a source value and recomputes the average.",
 )

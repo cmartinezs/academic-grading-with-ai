@@ -55,6 +55,22 @@ def simple_weighted(stage_id: str = "w") -> dict:
     }
 
 
+def piecewise_stage(stage_id: str = "scale", output_unit: str = "grade",
+                    breakpoints=None, outside_range: str = "clamp", **extra) -> dict:
+    return {
+        "id": stage_id,
+        "phase": "conversion",
+        "operator": "piecewiseLinearScale",
+        "inputs": [{"ref": "presentation"}],
+        "params": {
+            "outputUnit": output_unit,
+            "outsideRange": outside_range,
+            "breakpoints": breakpoints or [{"x": "0", "y": "1"}, {"x": "60", "y": "4"}, {"x": "100", "y": "7"}],
+        },
+        **extra,
+    }
+
+
 def inputs_for(**values) -> NormalizedInputs:
     assessments = {}
     for ref, score in values.items():
@@ -185,15 +201,18 @@ class SemanticGateTest(unittest.TestCase):
             load_policy(doc)
 
     def test_incompatible_unit_flow_rejected(self) -> None:
+        # piecewiseLinearScale emits level; weightedAverage cannot read a level.
         doc = policy(
-            resultStageId="scale2",
+            resultStageId="w",
             stages={
-                "scale1": {"id": "scale1", "phase": "conversion", "operator": "piecewiseLinearScale",
-                           "inputs": [{"ref": "presentation"}],
-                           "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}},
-                "scale2": {"id": "scale2", "phase": "conversion", "operator": "piecewiseLinearScale",
-                           "inputs": [{"ref": "scale1"}],
-                           "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 4, "to": 7}]}},
+                "scale1": piecewise_stage(output_unit="level", breakpoints=[
+                    {"x": "0", "y": "1"}, {"x": "7", "y": "1"}]),
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [{"ref": "scale1", "weight": "1"}],
+                },
             }
         )
         with self.assertRaises(SemanticValidationError):
@@ -203,9 +222,141 @@ class SemanticGateTest(unittest.TestCase):
         doc = policy(
             resultStageId="scale",
             stages={
-                "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
-                          "inputs": [{"ref": "presentation"}],
-                          "params": {"pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}]}}
+                "scale": {
+                    "id": "scale",
+                    "phase": "conversion",
+                    "operator": "piecewiseLinearScale",
+                    "inputs": [{"ref": "presentation"}],
+                    "params": {
+                        "outsideRange": "clamp",
+                        "breakpoints": [{"x": "0", "y": "1"}, {"x": "50", "y": "4"}],
+                    },
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_piecewise_outside_range_missing_rejected(self) -> None:
+        doc = policy(
+            resultStageId="scale",
+            stages={
+                "scale": {
+                    "id": "scale",
+                    "phase": "conversion",
+                    "operator": "piecewiseLinearScale",
+                    "inputs": [{"ref": "presentation"}],
+                    "params": {
+                        "outputUnit": "grade",
+                        "breakpoints": [{"x": "0", "y": "1"}, {"x": "50", "y": "4"}],
+                    },
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_duplicate_breakpoint_rejected(self) -> None:
+        doc = policy(
+            resultStageId="scale",
+            stages={
+                "scale": {
+                    "id": "scale",
+                    "phase": "conversion",
+                    "operator": "piecewiseLinearScale",
+                    "inputs": [{"ref": "presentation"}],
+                    "params": {
+                        "outputUnit": "grade",
+                        "outsideRange": "clamp",
+                        "breakpoints": [{"x": "50", "y": "1"}, {"x": "50", "y": "4"}],
+                    },
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_unsorted_breakpoint_rejected(self) -> None:
+        doc = policy(
+            resultStageId="scale",
+            stages={
+                "scale": {
+                    "id": "scale",
+                    "phase": "conversion",
+                    "operator": "piecewiseLinearScale",
+                    "inputs": [{"ref": "presentation"}],
+                    "params": {
+                        "outputUnit": "grade",
+                        "outsideRange": "clamp",
+                        "breakpoints": [{"x": "60", "y": "4"}, {"x": "0", "y": "1"}],
+                    },
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_weighted_average_requires_weights(self) -> None:
+        doc = policy(
+            resultStageId="w",
+            stages={
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [{"ref": "presentation"}, {"ref": "exam"}],
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_weight_on_sum_rejected(self) -> None:
+        doc = policy(
+            resultStageId="s",
+            stages={
+                "s": {
+                    "id": "s",
+                    "phase": "aggregation",
+                    "operator": "sum",
+                    "inputs": [{"ref": "presentation", "weight": "0.5"}, {"ref": "exam", "weight": "0.5"}],
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_weights_not_one_rejected_at_validation(self) -> None:
+        doc = policy(
+            resultStageId="w",
+            stages={
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [
+                        {"ref": "presentation", "weight": "0.1"},
+                        {"ref": "exam", "weight": "0.1"},
+                    ],
+                }
+            }
+        )
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
+
+    def test_negative_weight_rejected(self) -> None:
+        doc = policy(
+            resultStageId="w",
+            stages={
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [
+                        {"ref": "presentation", "weight": "1.5"},
+                        {"ref": "exam", "weight": "-0.5"},
+                    ],
+                }
             }
         )
         with self.assertRaises(SemanticValidationError):
@@ -233,7 +384,8 @@ class OperatorConformanceTest(unittest.TestCase):
         with self.assertRaises(MissingInputError):
             calculate(load_policy(doc), inputs_for(presentation=80, exam=None), {"subjectId": "S"})
 
-    def test_weighted_average_weights_not_one(self) -> None:
+    def test_weighted_average_weights_not_one_runtime_guard(self) -> None:
+        # Static validation catches it, but the runtime guard must stay typed.
         doc = policy(
             resultStageId="w",
             stages={
@@ -242,14 +394,14 @@ class OperatorConformanceTest(unittest.TestCase):
                     "phase": "aggregation",
                     "operator": "weightedAverage",
                     "inputs": [
-                        {"ref": "presentation", "weight": "0.1"},
-                        {"ref": "exam", "weight": "0.1"},
+                        {"ref": "presentation", "weight": "0.6"},
+                        {"ref": "exam", "weight": "0.3"},
                     ],
                 }
             }
         )
-        with self.assertRaises(WeightSumError):
-            calculate(load_policy(doc), inputs_for(presentation=80, exam=60), {"subjectId": "S"})
+        with self.assertRaises(SemanticValidationError):
+            load_policy(doc)
 
     def test_sum(self) -> None:
         doc = policy(
@@ -261,60 +413,127 @@ class OperatorConformanceTest(unittest.TestCase):
         self.assertEqual(out.value.value, Decimal("30"))
         self.assertEqual(out.value.unit, "percent")
 
-    def test_piecewise_linear_scale(self) -> None:
+    def test_sum_typed_cap_and_floor(self) -> None:
         doc = policy(
-            resultStageId="scale",
+            resultStageId="s",
             stages={
-                "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
-                          "inputs": [{"ref": "presentation"}],
-                          "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
+                "s": {
+                    "id": "s",
+                    "phase": "aggregation",
+                    "operator": "sum",
+                    "inputs": [{"ref": "presentation"}, {"ref": "exam"}],
+                    "params": {
+                        "floor": {"value": "10", "unit": "percent"},
+                        "cap": {"value": "50", "unit": "percent"},
+                    },
+                }
             }
         )
+        out = calculate(load_policy(doc), inputs_for(presentation=100, exam=100), {"subjectId": "S"})
+        self.assertEqual(out.value.value, Decimal("50"))
+        self.assertEqual(out.value.unit, "percent")
+
+    def test_piecewise_linear_scale(self) -> None:
+        doc = policy(resultStageId="scale", stages={"scale": piecewise_stage()})
         out = calculate(load_policy(doc), inputs_for(presentation=90), {"subjectId": "S"})
-        self.assertEqual(out.value.value, Decimal("6.4"))
+        self.assertEqual(out.value.value, Decimal("6.25"))
         self.assertEqual(out.value.unit, "grade")
 
+    def test_piecewise_linear_scale_exact_breakpoint(self) -> None:
+        doc = policy(resultStageId="scale", stages={"scale": piecewise_stage()})
+        out = calculate(load_policy(doc), inputs_for(presentation=60), {"subjectId": "S"})
+        self.assertEqual(out.value.value, Decimal("4"))
+
     def test_piecewise_linear_scale_clamps_low(self) -> None:
-        doc = policy(
-            resultStageId="scale",
-            stages={
-                "scale": {"id": "scale", "phase": "conversion", "operator": "piecewiseLinearScale",
-                          "inputs": [{"ref": "presentation"}],
-                          "params": {"outputUnit": "grade", "pairs": [{"from": None, "to": 1}, {"from": 50, "to": 4}, {"from": 100, "to": 7}]}}
-            }
-        )
-        out = calculate(load_policy(doc), inputs_for(presentation=20), {"subjectId": "S"})
+        doc = policy(resultStageId="scale", stages={"scale": piecewise_stage()})
+        out = calculate(load_policy(doc), inputs_for(presentation=-10), {"subjectId": "S"})
         self.assertEqual(out.value.value, Decimal("1"))
+
+    def test_piecewise_linear_scale_clamps_high(self) -> None:
+        doc = policy(resultStageId="scale", stages={"scale": piecewise_stage()})
+        out = calculate(load_policy(doc), inputs_for(presentation=120), {"subjectId": "S"})
+        self.assertEqual(out.value.value, Decimal("7"))
 
     def test_additive_bonus(self) -> None:
         doc = policy(
+            assessments=["presentation", "bonus"],
             resultStageId="b",
             stages={
-                "b": {"id": "b", "phase": "adjustment", "operator": "additiveBonus",
-                      "inputs": [{"ref": "presentation"}], "params": {"bonus": "5"}}
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [{"ref": "presentation", "weight": "1"}],
+                },
+                "b": {
+                    "id": "b",
+                    "phase": "adjustment",
+                    "operator": "additiveBonus",
+                    "inputs": [],
+                    "params": {
+                        "target": "w",
+                        "source": "bonus",
+                        "cap": {"value": "100", "unit": "percent"},
+                    },
+                },
             }
         )
-        out = calculate(load_policy(doc), inputs_for(presentation=80), {"subjectId": "S"})
+        out = calculate(load_policy(doc), inputs_for(presentation=80, bonus=5), {"subjectId": "S"})
         self.assertEqual(out.value.value, Decimal("85"))
+
+    def test_additive_bonus_cap_applied(self) -> None:
+        doc = policy(
+            assessments=["presentation", "bonus"],
+            resultStageId="b",
+            stages={
+                "w": {
+                    "id": "w",
+                    "phase": "aggregation",
+                    "operator": "weightedAverage",
+                    "inputs": [{"ref": "presentation", "weight": "1"}],
+                },
+                "b": {
+                    "id": "b",
+                    "phase": "adjustment",
+                    "operator": "additiveBonus",
+                    "inputs": [],
+                    "params": {
+                        "target": "w",
+                        "source": "bonus",
+                        "cap": {"value": "100", "unit": "percent"},
+                    },
+                },
+            }
+        )
+        out = calculate(load_policy(doc), inputs_for(presentation=98, bonus=5), {"subjectId": "S"})
+        self.assertEqual(out.value.value, Decimal("100"))
 
     def test_replace_lowest_input(self) -> None:
         doc = policy(
+            assessments=["presentation", "exam", "replacement"],
             resultStageId="r",
             stages={
-                "r": {"id": "r", "phase": "adjustment", "operator": "replaceLowestInput",
-                      "inputs": [{"ref": "presentation"}, {"ref": "exam"}],
-                      "params": {"replacement": "60"}}
+                "w": simple_weighted(),
+                "r": {
+                    "id": "r",
+                    "phase": "adjustment",
+                    "operator": "replaceLowestInput",
+                    "inputs": [],
+                    "params": {"target": "w", "source": "replacement", "tiePolicy": "replaceFirst"},
+                },
             }
         )
-        out = calculate(load_policy(doc), inputs_for(presentation=70, exam=90), {"subjectId": "S"})
-        self.assertEqual(out.value.value, Decimal("150"))
+        out = calculate(load_policy(doc), inputs_for(presentation=70, exam=90, replacement=60), {"subjectId": "S"})
+        # lowest candidate = presentation (70) replaced by 60 -> 0.6*60 + 0.4*90 = 72
+        self.assertEqual(out.value.value, Decimal("72"))
 
     def test_cap(self) -> None:
         doc = policy(
             resultStageId="c",
             stages={
                 "c": {"id": "c", "phase": "adjustment", "operator": "cap",
-                      "inputs": [{"ref": "presentation"}], "params": {"max": "100"}}
+                      "inputs": [{"ref": "presentation"}],
+                      "params": {"cap": {"value": "100", "unit": "percent"}}}
             }
         )
         out = calculate(load_policy(doc), inputs_for(presentation=120), {"subjectId": "S"})
@@ -325,7 +544,8 @@ class OperatorConformanceTest(unittest.TestCase):
             resultStageId="f",
             stages={
                 "f": {"id": "f", "phase": "adjustment", "operator": "floor",
-                      "inputs": [{"ref": "presentation"}], "params": {"min": "0"}}
+                      "inputs": [{"ref": "presentation"}],
+                      "params": {"floor": {"value": "0", "unit": "percent"}}}
             }
         )
         out = calculate(load_policy(doc), inputs_for(presentation=-5), {"subjectId": "S"})
@@ -349,6 +569,18 @@ class OperatorConformanceTest(unittest.TestCase):
             )
             out = calculate(load_policy(doc), inputs_for(presentation=value), {"subjectId": "S"})
             self.assertEqual(str(out.value.value), expected, msg=f"mode={mode}")
+
+    def test_round_quantum(self) -> None:
+        doc = policy(
+            resultStageId="r",
+            stages={
+                "r": {"id": "r", "phase": "finalization", "operator": "round",
+                      "inputs": [{"ref": "presentation"}],
+                      "params": {"quantum": "0.1", "mode": "halfUp"}}
+            }
+        )
+        out = calculate(load_policy(doc), inputs_for(presentation="5.325"), {"subjectId": "S"})
+        self.assertEqual(str(out.value.value), "5.3")
 
 
 class ConditionConformanceTest(unittest.TestCase):
@@ -400,11 +632,20 @@ class ConditionConformanceTest(unittest.TestCase):
     def test_score_at_least(self) -> None:
         doc = policy(
             stages=self._stages_with_condition(
-                {"kind": "scoreAtLeast", "params": {"ref": "presentation", "threshold": "50"}}
+                {"kind": "scoreAtLeast", "params": {"ref": "presentation", "threshold": {"value": "50", "unit": "percent"}}}
             )
         )
         out = calculate(load_policy(doc), inputs_for(presentation=40, exam=60), {"subjectId": "S"})
         self.assertEqual(out.status, "pending")
+
+    def test_score_below(self) -> None:
+        doc = policy(
+            stages=self._stages_with_condition(
+                {"kind": "scoreBelow", "params": {"ref": "presentation", "threshold": {"value": "50", "unit": "percent"}}}
+            )
+        )
+        out = calculate(load_policy(doc), inputs_for(presentation=40, exam=60), {"subjectId": "S"})
+        self.assertEqual(out.status, "finalized")
 
     def test_assessment_missing(self) -> None:
         doc = policy(

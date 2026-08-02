@@ -3,9 +3,16 @@
 Every operator declares:
 
 - name, version, minimum engine version;
-- JSON Schema of its ``params`` object;
+- JSON Schema of its ``params`` object (``additionalProperties: false`` at every
+  level);
 - allowed phases;
 - accepted input units and a ``resolve_output_unit`` function;
+- input arity bounds (``min_inputs``/``max_inputs``);
+- weight rules (``required`` / ``forbidden``);
+- operator-specific semantic validation (``semantic_validate``);
+- referenced refs (``referenced_refs``): params-based references that are
+  first-class DAG edges (target/source of ``additiveBonus`` and
+  ``replaceLowestInput``);
 - null/missing behavior;
 - allowed missing policies.
 
@@ -20,7 +27,7 @@ is one of the ``StageState`` values.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional, Sequence
 
 from ..decimal import DZERO, Decimal
@@ -28,6 +35,7 @@ from ..models import (
     AcademicValue,
     EvalResult,
     MissingDecision,
+    Policy,
     ResolvedInput,
     StageSpec,
     StageState,
@@ -35,6 +43,32 @@ from ..models import (
 )
 
 VALUE = StageState.VALUE
+
+
+@dataclass(frozen=True)
+class OperatorReference:
+    """A params-based reference of an operator (a first-class DAG edge).
+
+    ``additiveBonus`` and ``replaceLowestInput`` reference entities through
+    ``params`` (``target``/``source``) and not only through ``stage.inputs``.
+    Each reference declares its role, the expected kind of the target entity,
+    whether it is required and the expected unit relationship to the stage.
+    """
+
+    ref: str
+    role: str = "source"
+    expected_kind: str = "either"
+    required: bool = True
+    expected_unit: str = "same"
+
+    def to_dict(self) -> dict:
+        return {
+            "ref": self.ref,
+            "role": self.role,
+            "expectedKind": self.expected_kind,
+            "required": self.required,
+            "expectedUnit": self.expected_unit,
+        }
 
 
 @dataclass(frozen=True)
@@ -48,6 +82,13 @@ class OperatorSpec:
     resolve_output_unit: Callable[[StageSpec, Mapping[str, Optional[str]]], Optional[str]]
     allowed_missing_policies: Sequence[str]
     evaluate: Callable[[object, StageSpec], EvalResult]
+    referenced_refs: Callable[[StageSpec], Sequence[OperatorReference]] = lambda stage: ()
+    min_inputs: int = 0
+    max_inputs: Optional[int] = 0
+    weight_rule: str = "forbidden"
+    semantic_validate: Optional[
+        Callable[[StageSpec, Policy, Mapping[str, Optional[str]]], Sequence[tuple[str, str]]]
+    ] = None
     description: str = ""
 
     def allows_phase(self, phase: str) -> bool:
@@ -59,30 +100,40 @@ class OperatorSpec:
     def accepts_unit(self, unit: str) -> bool:
         return unit in self.accepted_input_units
 
+    def references(self, stage: StageSpec) -> Sequence[OperatorReference]:
+        return self.referenced_refs(stage)
+
+    def check_arity(self, count: int) -> Optional[str]:
+        if count < self.min_inputs:
+            return f"operator={self.name} requires at least {self.min_inputs} input(s); got {count}."
+        if self.max_inputs is not None and count > self.max_inputs:
+            return (
+                f"operator={self.name} requires at most {self.max_inputs} input(s); got {count}."
+            )
+        return None
+
 
 def common_output_unit(
-    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+    stage: StageSpec, units: Mapping[str, Optional[str]]
 ) -> Optional[str]:
     """Output unit for operators that preserve the common input unit.
 
     Returns ``None`` when the common unit is unknown or the known units differ;
     the validator reports mixed declared units as a semantic finding.
     """
-    known = {
-        input_units[inp.ref] for inp in stage.inputs if input_units.get(inp.ref) is not None
-    }
+    known = {units.get(inp.ref) for inp in stage.inputs if units.get(inp.ref) is not None}
     if len(known) != 1:
         return None
     return next(iter(known))
 
 
 def single_input_output_unit(
-    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+    stage: StageSpec, units: Mapping[str, Optional[str]]
 ) -> Optional[str]:
     """Output unit for operators that preserve the single input unit."""
     if len(stage.inputs) != 1:
         return None
-    return input_units.get(stage.inputs[0].ref)
+    return units.get(stage.inputs[0].ref)
 
 
 def require_same_unit(values: Sequence[AcademicValue], operator: str, stage_id: str) -> None:
@@ -130,7 +181,9 @@ def resolve_inputs(ctx, spec: StageSpec) -> Sequence[ResolvedInput]:
     return resolved
 
 
-def split_present(resolved: Sequence[ResolvedInput]) -> tuple[list[ResolvedInput], list[ResolvedInput]]:
+def split_present(
+    resolved: Sequence[ResolvedInput],
+) -> tuple[list[ResolvedInput], list[ResolvedInput]]:
     present = [r for r in resolved if r.state == VALUE]
     missing = [r for r in resolved if r.state != VALUE]
     return present, missing
@@ -181,16 +234,14 @@ def terminal_result(
     )
 
 
-def minimum_result(
-    ctx,
-    spec: StageSpec,
-    missing: Sequence[ResolvedInput],
-) -> EvalResult:
+def minimum_result(ctx, spec: StageSpec, missing: Sequence[ResolvedInput]) -> EvalResult:
     """``minimumOutput`` fallback: emit params.minimum with its explicit unit."""
     minimum = spec.params.get("minimum") or {}
     unit = minimum.get("unit")
     if unit is None:
-        unit = next((expected_unit(ctx, m.ref) for m in missing if expected_unit(ctx, m.ref)), None)
+        unit = next(
+            (expected_unit(ctx, m.ref) for m in missing if expected_unit(ctx, m.ref)), None
+        )
     if unit is None:
         from ..errors import UnitMismatchError
 
@@ -321,6 +372,54 @@ def resolve_single(ctx, spec: StageSpec) -> SingleResolution:
     raise MissingPolicyError(
         f"stages[{spec.id}].operator={spec.operator}: missingPolicy {policy!r} is not "
         f"implemented for single-input operators."
+    )
+
+
+def resolve_refs(ctx, spec: StageSpec, refs: Sequence[str]) -> Sequence[ResolvedInput]:
+    """Resolve arbitrary refs (params-based operator references) to ResolvedInput.
+
+    Used by operators that reference entities via ``params`` (``target``/
+    ``source``) instead of ``stage.inputs`` so missing-policy handling and
+    trace recording follow the same path as input-based operators.
+    """
+    resolved = []
+    for ref in refs:
+        value, state, reason = ctx.resolve_ref(ref)
+        resolved.append(ResolvedInput(ref=ref, value=value, state=state, reason=reason, weight=None))
+    return resolved
+
+
+def apply_missing(
+    ctx,
+    spec: StageSpec,
+    resolved: Sequence[ResolvedInput],
+) -> tuple[list[ResolvedInput], Sequence[MissingDecision], Optional[EvalResult]]:
+    """Apply the operator's missing policy to resolved refs.
+
+    Returns ``(present, missing_decisions, terminal)``. ``present`` holds the
+    value-state refs; ``terminal`` is a non-None ``EvalResult`` when the policy
+    resolves to a non-value state or ``None`` when the operator can continue.
+    Raises ``MissingInputError`` for ``fail`` on absent refs.
+    """
+    present, missing = split_present(resolved)
+    if not missing:
+        return present, (), None
+    policy = missing_policy_for(spec)
+    if policy == "fail":
+        raise_missing(spec, missing)
+    if policy == "pending":
+        return present, (), terminal_result(spec, missing, "pending", "required ref is missing")
+    if policy == "notApplicable":
+        return (
+            present,
+            (),
+            terminal_result(spec, missing, "notApplicable", "required ref is missing"),
+        )
+    from ..errors import MissingPolicyError
+
+    raise MissingPolicyError(
+        f"stages[{spec.id}].operator={spec.operator}: missingPolicy {policy!r} is not "
+        "implemented for operator refs."
     )
 
 

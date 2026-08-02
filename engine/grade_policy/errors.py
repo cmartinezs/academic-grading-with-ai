@@ -49,6 +49,10 @@ class UnitMismatchError(GradePolicyError):
     """An operator received incompatible units."""
 
 
+class OutOfRangeError(GradePolicyError):
+    """An input is outside the breakpoint range and outsideRange=reject."""
+
+
 class MissingInputError(GradePolicyError):
     """A required input is absent and the missing policy resolves to fail."""
 

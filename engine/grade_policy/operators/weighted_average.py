@@ -5,6 +5,10 @@ pending / notApplicable) is applied per input. ``zero`` backfills with a zero in
 the stage's expected unit; ``excludeAndRenormalize`` drops the absent inputs and
 renormalizes the remaining weights; ``minimumOutput`` emits params.minimum;
 ``pending``/``notApplicable`` produce a non-value, non-finalizable state.
+
+Weight rules (C2 contract §6): every input carries its weight in ``InputRef``
+(there is no ``params.weights``), weights are positive and their sum equals 1
+within ``WEIGHT_SUM_TOLERANCE`` (validated statically and checked at runtime).
 """
 
 from __future__ import annotations
@@ -29,9 +33,9 @@ from .base import (
 
 
 def resolve_output_unit(
-    stage: StageSpec, input_units: Mapping[str, Optional[str]]
+    stage: StageSpec, units: Mapping[str, Optional[str]]
 ) -> Optional[str]:
-    return common_output_unit(stage, input_units)
+    return common_output_unit(stage, units)
 
 
 def _renormalize(
@@ -126,6 +130,7 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
         AcademicValue(result, output_unit),
         state=VALUE,
         missing_decisions=zero_mds,
+        decisions=[f"weights sum {decimal_str(total)} within tolerance"],
     )
 
 
@@ -136,7 +141,6 @@ spec = OperatorSpec(
     params_schema={
         "type": "object",
         "properties": {
-            "weights": {"type": "object", "additionalProperties": {"type": "number"}},
             "minimum": {
                 "type": "object",
                 "required": ["value", "unit"],
@@ -161,5 +165,8 @@ spec = OperatorSpec(
         "notApplicable",
     ),
     evaluate=_evaluate,
-    description="Weighted arithmetic mean of present inputs; weights must sum to 1.",
+    min_inputs=1,
+    max_inputs=None,
+    weight_rule="required",
+    description="Weighted arithmetic mean of present inputs; weights must be positive and sum to 1.",
 )

@@ -212,6 +212,7 @@ class EvalResult:
     warnings: Sequence[str] = field(default_factory=tuple)
     state: str = StageState.VALUE
     missing_decisions: Sequence[MissingDecision] = field(default_factory=tuple)
+    operator_data: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,7 @@ class StageEvaluation:
     output: Optional[AcademicValue] = None
     decisions: Sequence[str] = field(default_factory=tuple)
     warnings: Sequence[str] = field(default_factory=tuple)
+    operator_data: Optional[dict] = None
 
 
 @dataclass

@@ -10,9 +10,10 @@ from . import (
     sum as sum_op,
     weighted_average,
 )
-from .base import OperatorSpec
+from .base import OperatorReference, OperatorSpec
 
 __all__ = [
+    "OperatorReference",
     "OperatorSpec",
     "additive_bonus",
     "cap",
