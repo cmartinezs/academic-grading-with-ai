@@ -12,8 +12,7 @@ schema `1.1.0` (aditivo; 1.0.0 conservado y aún válido).
 - `master` en el estado de C1 (C1 119 tests + E2E OK, C0 92 tests OK, scan
   estricto `BLOCK=0 REVIEW=0`).
 - Rama `feat/c2-grade-policy-engine` sobre `master`; PR #5 (open, mergeable).
-- Head del reporte: se actualiza con el commit que contiene este documento
-  (ver § CI).
+- Head verificado: `1ad0e5e` (contiene este reporte).
 
 ## Resultado
 
@@ -143,13 +142,15 @@ Iteración 2 (este reporte): fixes de consistencia semántica (DAG/condiciones,
 unidades tipadas, missing policies, estados), engine `0.2.0`, schemas `1.1.0`,
 4 suites nuevas y docs actualizadas.
 
+- `1ad0e5e` feat: harden C2 engine semantics (typed units, states, missing policies)
+
 ## CI
 
 - Workflow `.github/workflows/c2.yml`: suite C2, regresión C1, regresión C0 y
   scan estricto.
-- Estado remoto: pendiente de confirmación sobre el head final de la iteración 2
-  (los gates locales del working tree están verdes en el momento de este
-  reporte). El head de CI es el commit que contiene este documento.
+- Estado remoto en el head verificado `1ad0e5e`: **verde** — `C2 grade policy
+  engine gates` success, `C1 publication snapshot gates` success, `C0 security
+  gates` success.
 
 ## Observaciones y riesgos residuales
 
@@ -161,5 +162,3 @@ unidades tipadas, missing policies, estados), engine `0.2.0`, schemas `1.1.0`,
   aritméticas sobre unidades `level`.
 - La matriz exacta se impone en validación semántica (no expresable en JSON
   Schema); quedó cubierta por `test_missing_policies.py`.
-- Riesgo residual: confirmar CI verde en el head remoto tras el push de la
-  iteración 2.
