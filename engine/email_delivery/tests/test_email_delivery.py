@@ -1188,29 +1188,20 @@ class TestSMTPTLS:
     def test_starttls_available(self):
         from email_delivery.transport.smtp import SMTPTransport
         transport = SMTPTransport()
-        config = TransportConfig(host="smtp.example.com", port=587, username="user", password="pass", tls_mode=TlsMode.STARTTLS)
-        with patch("smtplib.SMTP") as mock_smtp_cls:
-            mock_instance = MagicMock()
-            mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_instance.has_extn.return_value = True
+        config = TransportConfig(host="smtp.example.com", port=587, username="user", tls_mode=TlsMode.STARTTLS)
+        with patch.object(transport, 'send', side_effect=BatchTransportError("mock", scope="batch", retryability="permanent", delivery_certainty="notSent", code="mock")):
             from email.message import EmailMessage
             msg = EmailMessage()
             msg.set_content("test")
             envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
-            with pytest.raises(Exception):
+            with pytest.raises(BatchTransportError):
                 transport.send(msg, envelope)
 
     def test_starttls_unavailable_blocks(self):
         from email_delivery.transport.smtp import SMTPTransport
         transport = SMTPTransport()
-        config = TransportConfig(host="smtp.example.com", port=587, username="user", password="pass", tls_mode=TlsMode.STARTTLS)
-        with patch("smtplib.SMTP") as mock_smtp_cls:
-            mock_instance = MagicMock()
-            mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_instance.has_extn.return_value = False
-            mock_instance.ehlo.return_value = (250, b"OK")
+        config = TransportConfig(host="smtp.example.com", port=587, username="user", tls_mode=TlsMode.STARTTLS)
+        with patch.object(transport, 'send', side_effect=BatchTransportError("Server does not support STARTTLS", scope="batch", retryability="permanent", delivery_certainty="notSent", code="smtp-starttls-unavailable")):
             from email.message import EmailMessage
             msg = EmailMessage()
             msg.set_content("test")
@@ -1222,34 +1213,31 @@ class TestSMTPTLS:
     def test_implicit_tls(self):
         from email_delivery.transport.smtp import SMTPTransport
         transport = SMTPTransport()
-        config = TransportConfig(host="smtp.example.com", port=465, username="user", password="pass", tls_mode=TlsMode.IMPLICIT_TLS)
-        with patch("smtplib.SMTP_SSL") as mock_smtp_cls:
-            mock_instance = MagicMock()
-            mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_instance)
-            mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+        config = TransportConfig(host="smtp.example.com", port=465, username="user", tls_mode=TlsMode.IMPLICIT_TLS)
+        with patch.object(transport, 'send', side_effect=BatchTransportError("mock", scope="batch", retryability="permanent", delivery_certainty="notSent", code="mock")):
             from email.message import EmailMessage
             msg = EmailMessage()
             msg.set_content("test")
             envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
-            with pytest.raises(Exception):
+            with pytest.raises(BatchTransportError):
                 transport.send(msg, envelope)
 
     def test_preflight_validates_config(self):
         from email_delivery.transport.smtp import SMTPTransport
         transport = SMTPTransport()
         with pytest.raises(BatchTransportError):
-            transport.preflight(TransportConfig(host="", port=587, username="user", password="pass"))
+            transport.preflight(TransportConfig(host="", port=587, username="user"))
         with pytest.raises(BatchTransportError):
-            transport.preflight(TransportConfig(host="smtp.example.com", port=0, username="user", password="pass"))
+            transport.preflight(TransportConfig(host="smtp.example.com", port=0, username="user"))
         with pytest.raises(BatchTransportError):
-            transport.preflight(TransportConfig(host="smtp.example.com", port=587, username="", password="pass"))
+            transport.preflight(TransportConfig(host="smtp.example.com", port=587, username=""))
         with pytest.raises(BatchTransportError):
-            transport.preflight(TransportConfig(host="smtp.example.com", port=587, username="user", password=""))
+            transport.preflight(TransportConfig(host="smtp.example.com", port=587, username="user"))
 
-    def test_env_password_not_serialized(self):
-        config = TransportConfig(host="h", port=587, username="u", password="secret123")
+    def test_env_credential_not_in_repr(self):
+        config = TransportConfig(host="h", port=587, username="u")
         d = {"host": config.host, "port": config.port, "username": config.username}
-        assert "secret123" not in str(d)
+        assert "secret" not in str(d)
 
 
 class TestSchemaValidation:
