@@ -101,8 +101,10 @@ revocaciones.
           ▼                    ▼                      ▼
 ┌──────────────────┐  ┌──────────────────┐  ┌───────────────────────┐
 │ pure projections │  │ effectful portal │  │ effectful email       │
-│ teacher / BI     │  │ publish/revoke   │  │ prepare/execute       │
-│ deterministic    │  │ encrypted/auth   │  │ ledger/idempotency    │
+│ teacher / BI     │  │ publish/revoke   │  │ prepare/approve/      │
+│ deterministic    │  │ encrypted/auth   │  │   execute             │
+│                  │  │                  │  │ ledger/idempotency    │
+│                  │  │                  │  │ templates versioned   │
 └──────────────────┘  └──────────────────┘  └───────────────────────┘
 ```
 
@@ -129,7 +131,8 @@ No se consideran deterministas. Deben ser idempotentes, auditables y reanudables
 - envío SMTP;
 - logging operacional;
 - reintentos;
-- actualización de ledger.
+- actualización de ledger;
+- email delivery (prepare → approve → execute).
 
 ## 5. Límite de datos
 

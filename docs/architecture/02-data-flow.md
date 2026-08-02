@@ -178,7 +178,7 @@ snapshot aprobado
 → calculate previewHash
 → teacher approves previewHash
 → execute with idempotency key
-→ persist per-recipient result
+→ persist per-recipient result in durable ledger
 ```
 
 Clave idempotente mínima:
@@ -188,6 +188,41 @@ sectionId + publicationId + studentId + recipient + templateVersion + intent
 ```
 
 Si cambia cualquiera de estos valores, se requiere una nueva preparación y aprobación.
+
+### 7.1 Flujo detallado C3 — Email delivery publisher
+
+```text
+approved snapshot
+  │
+  ▼
+engine/email_delivery/prepare
+  ├── join snapshot results with roster (studentId → email, name)
+  ├── render per-recipient email from versioned template
+  ├── generate preview per recipient (subject, truncated body, recipient)
+  ├── calculate previewHash = SHA-256(all previews sorted)
+  └── emit plan: {recipients, templateVersion, previewHash, createdAt}
+  │
+  ▼
+human approval
+  ├── teacher reviews previews (count, hash, sample)
+  └── approve(previewHash) → approval.json
+  │
+  ▼
+engine/email_delivery/execute
+  ├── verify approval.previewHash == current plan.previewHash
+  ├── acquire lock (sectionId + publicationId)
+  ├── for each recipient:
+  │   ├── check idempotency key in ledger
+  │   ├── send via SMTP (or fake transport in CI)
+  │   └── append per-recipient result to ledger
+  ├── release lock
+  └── emit execution summary
+  │
+  ▼
+durable ledger (append-only)
+  ├── per-recipient: {idempotencyKey, status, messageId?, timestamp, error?}
+  └── batch: {sectionId, publicationId, previewHash, approvedBy, executedAt}
+```
 
 ## 8. Flujo BI
 

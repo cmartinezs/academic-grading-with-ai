@@ -53,6 +53,10 @@ Después de crear una evaluación:
 ./scripts/review-batch.sh <EV> --form D --limit 3
 ./scripts/workspace-status.sh
 ./scripts/export-results.sh
+# C3: email delivery from approved publication snapshot
+./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> prepare
+./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> approve --hash <PREVIEW_HASH>
+./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> execute
 # C1: build a verifiable snapshot of the legacy export and publish it
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> build --publication <PUB_ID>
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> reconcile [--publication <PUB_ID>]
@@ -74,3 +78,6 @@ Después de crear una evaluación:
 - [C1 implementation plan](docs/implementation/C1-IMPLEMENTATION-PLAN.md)
 - [C1 snapshot contract](docs/implementation/C1-SNAPSHOT-CONTRACT.md)
 - [C1 runbooks](docs/implementation/C1-RUNBOOKS.md)
+- [C3 implementation plan](docs/implementation/C3-IMPLEMENTATION-PLAN.md)
+- [C3 email contract](docs/implementation/C3-EMAIL-CONTRACT.md)
+- [C3 runbooks](docs/implementation/C3-RUNBOOKS.md)

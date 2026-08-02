@@ -122,6 +122,17 @@ vivir dentro de un directorio que se regenere o purgue como export.
 - secretos solo por secret store/variables de entorno;
 - transporte de prueba en CI.
 
+### 6.1 Seguridad específica C3 — Email delivery
+
+- **previewHash** ligado al plan completo: un solo byte de cambio invalida la aprobación.
+- **Ledger append-only**: no se sobrescriben entradas; correcciones son nuevas entradas.
+- **Lock granularity**: `sectionId + publicationId`; dos procesos no envían el mismo batch.
+- **SMTP auth failure**: detiene el batch inmediatamente; no se intenta el siguiente destinatario.
+- **Transient errors**: clasificados como retryable; no duplican envíos exitosos en reanudación.
+- **Template versioning**: cambio de template requiere nueva preparación (templateVersion en idempotency key).
+- **Reanudación**: tras crash, `execute` consulta ledger y saltea destinatarios ya enviados.
+- **Logs**: nunca contienen cuerpo completo ni destinatario sin enmascarar; solo idempotencyKey, status, error code.
+
 ## 7. BI
 
 ### Amenazas mínimas

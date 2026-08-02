@@ -98,4 +98,9 @@ pero no es suficiente por sí solo para reproducir una publicación.
   compatibilidad con verificación previa y fallo-cerrado, y reconciliación idempotente
   post-crash que nunca elimina snapshots promovidos.
   Detalle en [docs/implementation/C1-IMPLEMENTATION-PLAN.md](../implementation/C1-IMPLEMENTATION-PLAN.md).
-- **C2–C7** — Pendientes. No deben implementarse como parte de C1.
+- **C2** — Completo y verificado. Grade Policy Engine implementado y mergeado.
+- **C3** — En progreso. Implementación en `feat/c3-email-delivery`:
+  prepare/approve/execute de email, ledger durable, idempotency, templates versionados,
+  taxonomía de errores SMTP y reanudación segura.
+  Detalle en [docs/implementation/C3-IMPLEMENTATION-PLAN.md](../implementation/C3-IMPLEMENTATION-PLAN.md).
+- **C4–C7** — Pendientes. No deben implementarse como parte de C3.

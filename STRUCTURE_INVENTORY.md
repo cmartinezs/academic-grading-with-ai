@@ -80,6 +80,10 @@ la existencia de la documentación.
 | `engine/publication/schemas/` | Schemas JSON Draft 2020-12 de contratos de snapshot. |
 | `engine/publication/tests/` | Suite de tests C1 (119 tests + E2E). |
 | `engine/publication/requirements.txt` | Dependencia pinneada: `jsonschema==4.10.3`. |
+| `engine/email_delivery/` | Módulo C3: prepare/approve/execute, ledger, templates, idempotency. |
+| `engine/email_delivery/schemas/` | Schemas JSON de contrato de plan, preview y ledger de email. |
+| `engine/email_delivery/templates/` | Templates versionados de email. |
+| `engine/email_delivery/tests/` | Suite de tests C3 (unittest + transporte fake). |
 | `engine/templates/evaluation-base-template.md` | Plantilla fuente para generar `base.md`. |
 | `engine/templates/evaluation-case-template.md` | Plantilla fuente para generar `form-x/case.md`. |
 | `engine/templates/evaluation-assignments-template.json` | Plantilla fuente para inicializar `assignments.json`. |
@@ -108,6 +112,7 @@ la existencia de la documentación.
 | `scripts/c0-scan.sh` | Ejecuta el scanner PII/secrets C0. |
 | `scripts/c0-status.sh` | Ejecuta el chequeo de raíces de datos C0. |
 | `scripts/publication-snapshot.sh` | CLI C1 (build/verify/review/approve/status/transition/compatibility [--replace-legacy-aliases]/reconcile/discard) + `test`. |
+| `scripts/email-delivery.sh` | CLI C3 (prepare/approve/execute/status/discard) + `test`. |
 
 ## `automation/`
 
@@ -150,6 +155,10 @@ ruta global por snapshots aislados mediante `sectionId/publicationId`.
 | `docs/implementation/C1-SNAPSHOT-CONTRACT.md` | Contratos exactos de snapshot, ledger, vistas y exit codes. |
 | `docs/implementation/C1-RUNBOOKS.md` | Runbooks operativos de C1. |
 | `docs/implementation/C1-VERIFICATION-REPORT.md` | Reporte de verificación final de C1. |
+| `docs/implementation/C3-IMPLEMENTATION-PLAN.md` | Plan de implementación del corte C3. |
+| `docs/implementation/C3-EMAIL-CONTRACT.md` | Contratos de plan, preview, approval y ledger de email. |
+| `docs/implementation/C3-RUNBOOKS.md` | Runbooks operativos de C3. |
+| `docs/implementation/C3-VERIFICATION-REPORT.md` | Reporte de verificación final de C3. |
 
 ## `.github/workflows/`
 
@@ -157,6 +166,7 @@ ruta global por snapshots aislados mediante `sectionId/publicationId`.
 | --- | --- |
 | `.github/workflows/c0.yml` | Gates C0 en CI: tests, scan estricto, estado de seguridad. |
 | `.github/workflows/c1.yml` | Gates C1 en CI: tests/E2E, regresión C0, scan estricto. |
+| `.github/workflows/c3.yml` | Gates C3 en CI: tests, regresión C0/C1, scan estricto, email dry-run. |
 
 ## `onboarding/`
 

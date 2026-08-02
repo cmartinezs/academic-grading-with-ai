@@ -73,6 +73,8 @@ C1.
 
 ## C3 — Email prepare/approve/execute
 
+> **Estado: EN PROGRESO** — branch `feat/c3-email-delivery`
+
 ### Alcance
 
 - Join mínimo con roster privado.
