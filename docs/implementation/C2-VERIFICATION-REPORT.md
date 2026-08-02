@@ -2,24 +2,25 @@
 
 Corte **C2 — Grade Policy Engine** (motor determinista de políticas de
 calificación), branch `feat/c2-grade-policy-engine`. Este reporte cubre la
-cuarta iteración de C2: cierre de tres hallazgos residuales (contrato oficial,
-restricción V1 del target de `replaceLowestInput` y `zero` de
-`piecewiseLinearScale`). Motor `0.2.0`; `outcomes`/`traces` en schema `1.1.0`
-(aditivo; 1.0.0 conservado y aún válido).
+quinta iteración de C2: cierre de la frontera de autoridad entre
+`canonical/results.json` y el Grade Policy Engine (unidades explícitas en
+snapshot, selección de attempts, score inválido, fixtures reales). Motor
+`0.2.0`; `outcomes`/`traces` en schema `1.1.0` (aditivo; 1.0.0 conservado y
+aún válido).
 
 ## Base
 
 - `master` en el estado de C1 (C1 119 tests + E2E OK, C0 92 tests OK, scan
   estricto `BLOCK=0 REVIEW=0`).
 - Rama `feat/c2-grade-policy-engine` sobre `master`; PR #5 (Draft, open).
-- Head verificado: `6c4b531` (código y tests de la iteración 4; este reporte se
-  registra en el commit encima, patrón igual al de la iteración 3).
+- Head verificado: `61dde30` (código y tests de la iteración 5; frontera de
+  autoridad cerrada entre canonical/results.json y el engine).
 
 ## Resultado
 
 | Check | Resultado |
 |---|---|
-| C2 suite unittest (**176 tests**: schema/semantic gates, DAG + aristas de condición y de refs de operador, paridad con el ejemplo oficial §2 **copiado literalmente** del contrato, restricción V1 del target de `replaceLowestInput`, `zero` de `piecewiseLinearScale`, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0 con `operatorData`, determinismo Decimal, integración de snapshot, inyección de fallos, introspección de specs de operadores, sin errores crudos en runtime) | `OK` |
+| C2 suite unittest (**199 tests**: schema/semantic gates, DAG + aristas de condición y de refs de operador, paridad con el ejemplo oficial §2 **copiado literalmente** del contrato, restricción V1 del target de `replaceLowestInput`, `zero` de `piecewiseLinearScale`, propagación de unidades, matriz de missing policies, estados tipados, trazas 1.1.0 con `operatorData`, determinismo Decimal, integración de snapshot, inyección de fallos, introspección de specs de operadores, sin errores crudos en runtime, **frontera de autoridad canonical** — unidades explícitas sin `or "percent"`, rechazo de attempts duplicados, score inválido tipado, precondición C1) | `OK` |
 | C2 self-check E2E sintético (`calculate` weightedAverage + round → `SUBJ-E2E → 76`) | `OK` |
 | Regresión C1 (119 tests + E2E synthetic) | `OK` |
 | Regresión C0 (92 tests) | `OK` |
@@ -42,17 +43,58 @@ restricción V1 del target de `replaceLowestInput` y `zero` de
   - `replaceLowestInput`: target restringido en V1 (ver § Hallazgo 2);
   - `piecewiseLinearScale`: `zero` con unidad del input ref, check de rango
     antes de escalar (ver § Hallazgo 3).
-- `engine/grade_policy/snapshot.py`: el adaptador de canonical respeta la unidad
-  declarada por assessment (`assessmentUnits`), con `percent` por defecto, de
-  modo que el ejemplo oficial §2 (con `EvG: level`) genera snapshot C2 sin
-  fallar por unidad.
-- Tests (9 archivos): `test_conformance.py`, `test_property.py`,
+- `engine/grade_policy/snapshot.py`: el adaptador de canonical es **fail-closed**:
+  todo assessment que la policy usa debe declarar su unidad en
+  `assessmentUnits` (nunca cae silenciosamente a `percent`); más de un
+  resultado para el mismo `(studentId, assessmentId)` es rechazado
+  (`DuplicateAttemptError`); score no finito o no parseable es rechazado
+  (`InvalidScoreError`); la estructura C1 se valida antes de calcular
+  (`CanonicalFormatError`). El modo standalone (CLI con inputs tipados) puede
+  resolver unidades desde los inputs; el modo snapshot no.
+- `engine/grade_policy/errors.py`: tres nuevos errores tipados
+  (`CanonicalFormatError`, `DuplicateAttemptError`, `InvalidScoreError`).
+- Tests (10 archivos): `test_conformance.py`, `test_property.py`,
   `test_dag_conditions.py`, `test_units.py`, `test_missing_policies.py`,
   `test_states.py`, `test_snapshot_integration.py`, `test_contract_parity.py`,
-  `test_no_unhandled_exceptions.py`, `test_operator_specs.py`.
+  `test_no_unhandled_exceptions.py`, `test_operator_specs.py`,
+  `test_canonical_boundary.py` (unidades explícitas, selección de attempts,
+  score inválido, precondición C1).
 - Docs: plan, contrato, runbooks y este reporte.
 
 ## Hallazgos residuales cerrados
+
+### 0. Frontera de autoridad canonical/results.json ↔ engine (iteración 5)
+
+El modo snapshot es la frontera de autoridad entre `canonical/results.json` y
+el engine de policy, y es **fail-closed** (los payloads canonical de C1 no
+llevan unidad, por lo que el engine nunca adivina):
+
+- **Unidades explícitas**: se eliminó `or "percent"` en `build_c2_payloads`;
+  todo assessment que la policy usa debe declarar su unidad en
+  `assessmentUnits`. Un assessment sin unidad declarada es rechazado
+  (`SemanticValidationError`) — nunca cae silenciosamente a `percent`. El modo
+  standalone (CLI con inputs tipados) sí puede resolver unidades desde los
+  inputs; el modo snapshot no.
+- **Selección de attempts fuera de C2 V1**: más de un resultado para el mismo
+  `(studentId, assessmentId)` es rechazado con `DuplicateAttemptError` (tipado
+  y sanitizado). El orden del array nunca es política de selección; no existe
+  "último", "primero" ni "mejor" implícito. Seleccionar entre intentos
+  múltiples requerirá una policy explícita futura.
+- **Score inválido**: se reemplazó el catch-all `except Exception: return None`
+  en `_to_score`. `null`/vacío es `missing` (gestionado por la missing policy
+  del stage); un número válido se convierte con `to_decimal`; un valor no vacío
+  que no parsea, o `NaN`/`Infinity`, es un error tipado (`InvalidScoreError`) —
+  los errores de datos **nunca** se convierten en missing policy. El mensaje no
+  incluye el valor crudo ni PII (no name/RUT/email/path).
+- **Precondición estructural C1**: `build_c2_payloads` valida la estructura C1
+  de `subjects.json`, `assessments.json` y `results.json` (`schemaVersion`,
+  `sectionId`, `studentId` opaco `stu_…`, `attemptId` opaco `att_…`, `status`,
+  `components`, `score`). Una estructura incompleta es `CanonicalFormatError` —
+  el snapshot no se calcula sobre estructuras incompletas.
+- **Fixtures reales**: los tests de snapshot del ejemplo oficial usan payloads
+  canonical válidos según los schemas C1 (opaque ids, attemptId, status,
+  components, score). `test_canonical_boundary.py` cubre los cuatro ejes con
+  datos sintéticos completos.
 
 ### 1. Contrato oficial (C2-GRADE-POLICY-CONTRACT.md)
 
@@ -119,6 +161,10 @@ En `missingPolicy=zero`:
 - Snapshots C2: manifest files/contentHash/reviewHash cubren los artefactos C2;
   un build fallido no deja staging parcial; los snapshots legacy son
   byte-compatibles.
+- Frontera de autoridad (snapshot mode): unidades explícitas requeridas
+  (`SemanticValidationError` si falta); attempts duplicados rechazados
+  (`DuplicateAttemptError`); score inválido rechazado (`InvalidScoreError`);
+  estructura C1 validada (`CanonicalFormatError`).
 
 ## Matriz exacta missing policies (probada)
 
@@ -181,18 +227,19 @@ Iteración 1 (base):
 Iteración 3 (cierre de la divergencia contrato ↔ implementación): `1ad0e5e`,
 `f26ba5c`, `b49fbdc`.
 
-Iteración 4 (este reporte): cierre de los tres hallazgos residuales (contrato
-oficial, target V1 de `replaceLowestInput`, `zero` de `piecewiseLinearScale`).
-Commits a continuación de la iteración 3 en el PR #5:
+Iteración 4 (cierre de tres hallazgos residuales): `6c4b531`, `4f6f9ca`.
 
-- `6c4b531` feat: close C2 residual findings (contract parity, replaceLowestInput
-  target V1, piecewise zero)
+Iteración 5 (este reporte): cierre de la frontera de autoridad
+canonical/results.json ↔ engine. Commit:
+
+- `61dde30` feat: close authority frontier between canonical/results.json and
+  grade policy engine
 
 ## CI
 
 - Workflow `.github/workflows/c2.yml`: suite C2, regresión C1, regresión C0 y
   scan estricto.
-- Estado remoto en el head verificado `6c4b531`: **verde** — `C2 grade policy
+- Estado remoto en el head verificado `61dde30`: **verde** — `C2 grade policy
   engine gates` success, `C1 publication snapshot gates` success, `C0 security
   gates` success.
 
@@ -201,7 +248,8 @@ Commits a continuación de la iteración 3 en el PR #5:
 - La inferencia estática de unidades cubre solo `assessmentUnits` declaradas;
   las unidades no declaradas se resuelven en runtime (por diseño: no se adivina).
   Una policy sin `assessmentUnits` que combine unidades heterogéneas falla en
-  runtime, no en validación.
+  runtime, no en validación. **En modo snapshot**, la falta de unidad es
+  rechazada antes del cálculo (`SemanticValidationError`).
 - `level` participa en condiciones `levelAtLeast`; no hay operaciones
   aritméticas sobre unidades `level`.
 - La restricción V1 del target de `replaceLowestInput` es una limitación
@@ -210,3 +258,6 @@ Commits a continuación de la iteración 3 en el PR #5:
 - La matriz exacta se impone en validación semántica (no expresable en JSON
   Schema); quedó cubierta por `test_missing_policies.py` y
   `test_contract_parity.py`.
+- **Selección de attempts múltiples queda fuera de C2 V1**: un future policy
+  explícita sería necesaria para elegir entre múltiples intentos
+  (first/last/best son todos rechazados como reglas implícitas).
