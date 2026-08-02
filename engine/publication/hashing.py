@@ -38,6 +38,8 @@ EXPECTED_FILE_META = {
     "canonical/subjects.json": (CLASSIFICATION_RESTRICTED, AUDIENCE_GRADING),
     "canonical/results.json": (CLASSIFICATION_RESTRICTED, AUDIENCE_GRADING),
     "canonical/policy.json": (CLASSIFICATION_RESTRICTED, AUDIENCE_GRADING),
+    "canonical/outcomes.json": (CLASSIFICATION_RESTRICTED, AUDIENCE_GRADING),
+    "canonical/traces.json": (CLASSIFICATION_RESTRICTED, AUDIENCE_GRADING),
     "provenance/source-hashes.json": (CLASSIFICATION_CONFIDENTIAL, AUDIENCE_STAFF),
     "provenance/engine.json": (CLASSIFICATION_INTERNAL, AUDIENCE_INTERNAL),
     "provenance/migrations.json": (CLASSIFICATION_INTERNAL, AUDIENCE_INTERNAL),

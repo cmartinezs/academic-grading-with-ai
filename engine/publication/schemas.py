@@ -36,6 +36,17 @@ REL_PATH_SCHEMAS: dict[str, str] = {
     "approvals/publication-approval.json": "publication-approval.schema.json",
 }
 
+# C2 canonical documents produced by the grade policy engine (additive).
+POLICY_ENGINE_SCHEMAS: dict[str, str] = {
+    "canonical/policy.json": "policy-grade-policy.schema.json",
+}
+
+# C2 engine artifact schemas live in the grade_policy package (additive).
+_GRADE_POLICY_ARTIFACT_SCHEMAS: dict[str, str] = {
+    "canonical/outcomes.json": "outcomes",
+    "canonical/traces.json": "traces",
+}
+
 COMPAT_VIEW_SCHEMA = "compatibility-view.schema.json"
 LIFECYCLE_EVENT_SCHEMA = "lifecycle-event.schema.json"
 
@@ -63,11 +74,32 @@ def load_schema(name: str) -> dict:
     return payload
 
 
-def schema_for_relpath(relpath: str) -> Optional[dict]:
+def schema_for_relpath(relpath: str, instance=None) -> Optional[dict]:
+    """Return the schema for a snapshot document by its relative path.
+
+    ``canonical/policy.json`` is mode-aware: the legacy schema constrains
+    ``mode: legacy-effective``, while C2 snapshots select the
+    ``grade-policy-effective`` schema. Unknown paths fail closed (None).
+    """
+    if relpath == "canonical/policy.json" and isinstance(instance, dict):
+        if instance.get("mode") == "grade-policy-effective":
+            return load_schema(POLICY_ENGINE_SCHEMAS[relpath])
+        return load_schema(REL_PATH_SCHEMAS[relpath])
     schema_name = REL_PATH_SCHEMAS.get(relpath)
-    if schema_name is None:
-        return None
-    return load_schema(schema_name)
+    if schema_name is not None:
+        return load_schema(schema_name)
+    artifact = _GRADE_POLICY_ARTIFACT_SCHEMAS.get(relpath)
+    if artifact is not None:
+        try:
+            from ..grade_policy.schemas import select_schema
+        except ImportError:  # engine/ on sys.path, packages imported top-level
+            from grade_policy.schemas import select_schema
+
+        declared = instance.get("schemaVersion") if isinstance(instance, dict) else None
+        if declared is None and isinstance(instance, dict):
+            declared = instance.get("traceSchemaVersion")
+        return select_schema(artifact, declared or "1.0.0")
+    return None
 
 
 def validate_instance(instance, schema: dict) -> list[str]:
@@ -85,7 +117,7 @@ def validate_instance(instance, schema: dict) -> list[str]:
 
 def validate_document(relpath: str, instance) -> list[str]:
     """Validate a snapshot document by its relative path. Unknown paths fail closed."""
-    schema = schema_for_relpath(relpath)
+    schema = schema_for_relpath(relpath, instance)
     if schema is None:
         return [f"no schema declared for {relpath}"]
     return validate_instance(instance, schema)

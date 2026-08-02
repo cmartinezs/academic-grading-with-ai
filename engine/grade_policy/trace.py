@@ -71,7 +71,7 @@ def traces_document(
     section_id: Optional[str] = None,
 ) -> dict:
     return {
-        "schemaVersion": "1.0.0",
+        "traceSchemaVersion": "1.0.0",
         "policy": getattr(policy, "raw", policy),
         "subjectTraces": [trace_dict(o, section_id) for o in outcomes.values()],
     }

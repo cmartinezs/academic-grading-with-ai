@@ -77,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_build = sub.add_parser("build", help="Build a draft snapshot in staging.")
     p_build.add_argument("--dry-run", action="store_true", help="Compute the content hash without writing anything.")
     p_build.add_argument("--legacy-source", help="Override the legacy export directory.")
+    p_build.add_argument("--grade-policy", help="C2 grade policy document (JSON) for grade-policy-effective mode.")
     p_build.add_argument("--supersedes-publication", help="Approved publication this snapshot supersedes.")
     p_build.add_argument("--corrects-publication", help="Approved publication this snapshot corrects.")
 
@@ -136,6 +137,7 @@ def make_context(args, publication_id=None):
         env=env,
         clock=Clock(env=env),
         legacy_source=Path(args.legacy_source) if getattr(args, "legacy_source", None) else None,
+        grade_policy_source=Path(args.grade_policy) if getattr(args, "grade_policy", None) else None,
     )
 
 

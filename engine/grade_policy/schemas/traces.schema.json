@@ -5,9 +5,9 @@
   "description": "Per-stage calculation audit trail for one evaluation run. Deterministic and replayable; contains no PII.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "policy", "subjectTraces"],
+  "required": ["traceSchemaVersion", "policy", "subjectTraces"],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "traceSchemaVersion": { "const": "1.0.0" },
     "policy": {
       "type": "object",
       "additionalProperties": true
