@@ -134,7 +134,7 @@ class EmailLedger:
     def _connect(self) -> sqlite3.Connection:
         if self._conn is not None:
             return self._conn
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA synchronous = FULL")
@@ -256,6 +256,12 @@ class EmailLedger:
                             delivery_certainty: Optional[str] = None,
                             provider_message_id: Optional[str] = None,
                             client_message_id: Optional[str] = None) -> None:
+        from .models import VALID_TRANSITIONS
+        allowed = VALID_TRANSITIONS.get(from_state, frozenset())
+        if to_state not in allowed:
+            raise DeliveryStateError(
+                f"Invalid transition: {from_state.value} → {to_state.value}"
+            )
         now = self._now()
         with self.conn:
             result = self.conn.execute(

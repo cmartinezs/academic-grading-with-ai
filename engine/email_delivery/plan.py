@@ -154,8 +154,6 @@ def prepare_plan(
     for recipient in recipients:
         preview_path = previews_dir / f"{recipient.student_id}.txt"
         preview_path.write_text(recipient.text_body, encoding="utf-8")
-        preview_path.flush()
-        os.fsync(preview_path.open("r").fileno()) if False else None
         rel = f"previews/{recipient.student_id}.txt"
         manifest_files[rel] = {"sha256": sha256_file(preview_path)}
 
