@@ -108,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_compat = sub.add_parser("compatibility", help="Generate compatibility views from an approved snapshot.")
     p_compat.add_argument("--update-legacy-aliases", action="store_true", help="Also write legacy aliases (course/*, evaluations, grades).")
+    p_compat.add_argument(
+        "--replace-legacy-aliases", action="store_true",
+        help="Replace an existing legacy alias bundle atomically (requires --update-legacy-aliases).",
+    )
 
     sub.add_parser("status", help="Show the lifecycle state and published snapshots for the section.")
 
@@ -245,8 +249,18 @@ def cmd_transition(args) -> int:
 
 
 def cmd_compatibility(args) -> int:
+    if args.replace_legacy_aliases and not args.update_legacy_aliases:
+        print(
+            "compatibility: --replace-legacy-aliases requires --update-legacy-aliases.",
+            file=sys.stderr,
+        )
+        return 1
     ctx = make_context(args)
-    written = compat.generate(ctx, update_legacy_aliases=args.update_legacy_aliases)
+    written = compat.generate(
+        ctx,
+        update_legacy_aliases=args.update_legacy_aliases,
+        replace_legacy_aliases=args.replace_legacy_aliases,
+    )
     print(f"Compatibility views for {ctx.publication_id}:")
     for rel in written:
         print(f"  {rel}")

@@ -1825,6 +1825,66 @@ class TransitionCompatSerializationTest(C1TestCase):
 # ---------------------------------------------------------------------------
 
 
+# Final: CLI --replace-legacy-aliases (existing destination, explicit replace,
+# invalid use)
+# ---------------------------------------------------------------------------
+
+
+class CompatCliTest(C1TestCase):
+    def _run_cli(self, *args, env=None):
+        import subprocess
+        import sys
+
+        script = Path(__file__).resolve().parents[3] / "engine" / "scripts" / "publication_snapshot.py"
+        proc_env = dict(os.environ)
+        proc_env.update(env or self.env)
+        return subprocess.run(
+            [
+                sys.executable, str(script),
+                "--workspace", str(self.base), "--section", SECTION,
+                "--publication", "pub_a",
+            ] + list(args),
+            env=proc_env, capture_output=True, text=True,
+        )
+
+    def test_replace_without_update_rejected(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        proc = self._run_cli("compatibility", "--replace-legacy-aliases")
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("--update-legacy-aliases", proc.stderr)
+
+    def test_existing_destination_rejected(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        first = self._run_cli("compatibility", "--update-legacy-aliases")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = self._run_cli("compatibility", "--update-legacy-aliases")
+        self.assertEqual(second.returncode, 1, second.stderr)
+        self.assertIn("already exist", second.stderr)
+        self.assertFalse(
+            [f for f in (ctx.runtime.temp_root / "compat-staging").rglob("*") if f.is_file()],
+            "no staging leftover after the rejected overwrite",
+        )
+
+    def test_explicit_replace_succeeds(self):
+        ctx, content_hash, dest = self.approve_flow("pub_a")
+        first = self._run_cli("compatibility", "--update-legacy-aliases")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        view_root = compat.section_compat_dir(ctx, SECTION) / "pub_a"
+        force_rmtree(view_root)
+        second = self._run_cli("compatibility", "--update-legacy-aliases", "--replace-legacy-aliases")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        alias_root = compat.legacy_alias_dir(ctx, SECTION)
+        results = json.loads((alias_root / "course/results.json").read_text(encoding="utf-8"))
+        self.assertIn("items", results)
+        self.assertIsNone(results["items"][0]["resultPath"], "replaced bundle is legacy-contract clean")
+
+
+# ---------------------------------------------------------------------------
+# Final: crash after moving legacy aliases to backup is recoverable (orphan
+# backups are restored or removed by reconcile, never overwriting a valid alias)
+# ---------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
 
     unittest.main()
