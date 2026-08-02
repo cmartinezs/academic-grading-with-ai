@@ -22,11 +22,12 @@ from __future__ import annotations
 from typing import Mapping, Optional, Sequence
 
 from ..decimal import DZERO, Decimal, run
-from ..errors import OutOfRangeError, SchemaValidationError
+from ..errors import OutOfRangeError, SchemaValidationError, UnitMismatchError
 from ..models import AcademicValue, EvalResult, MissingDecision, Policy, ResolvedInput, StageSpec
 from .base import (
     VALUE,
     OperatorSpec,
+    expected_unit,
     missing_policy_for,
     raise_missing,
     resolve_inputs,
@@ -157,10 +158,24 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
         if policy == "notApplicable":
             return terminal_result(spec, [inp], "notApplicable", "required input is missing")
         if policy == "zero":
+            # The zero is created in the *input* ref's expected unit, never in
+            # params.outputUnit: piecewiseLinearScale is the only converting
+            # operator, so the missing input is a zero on the input scale that
+            # then flows through the breakpoints to the output unit.
+            input_unit = expected_unit(ctx, inp.ref)
+            if input_unit is None:
+                raise UnitMismatchError(
+                    f"stages[{spec.id}].operator={spec.operator}: cannot determine "
+                    "the input unit for a zero backfill; declare the input unit in "
+                    "the policy (assessmentUnits or an upstream stage unit)."
+                )
             output_unit = spec.params.get("outputUnit")
-            zero = ResolvedInput(
-                ref=inp.ref, value=AcademicValue(DZERO, output_unit), state=VALUE
-            )
+            if output_unit is None:
+                raise SchemaValidationError(
+                    f"stages[{spec.id}].operator=piecewiseLinearScale: params.outputUnit required."
+                )
+            zero_value = AcademicValue(DZERO, input_unit)
+            zero = ResolvedInput(ref=inp.ref, value=zero_value, state=VALUE)
             mds = [
                 MissingDecision(
                     ref=inp.ref,
@@ -171,8 +186,10 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
                     resulting_state=VALUE,
                 )
             ]
-            value = zero.value
-            result = _scale(spec, value.value)
+            # Range check runs before scaling: reject raises OutOfRangeError;
+            # clamp lets _scale produce the corresponding extreme.
+            _check_outside(spec, zero_value.value)
+            result = _scale(spec, zero_value.value)
             return EvalResult(
                 AcademicValue(result, output_unit),
                 state=VALUE,

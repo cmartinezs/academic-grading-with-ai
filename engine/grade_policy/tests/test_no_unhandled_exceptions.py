@@ -255,7 +255,7 @@ class NoUnhandledExceptionsTest(unittest.TestCase):
                         {"ref": "EV3", "weight": "0.25"},
                         {"ref": "EV4", "weight": "0.25"},
                     ],
-                    "missingPolicy": "zero",
+                    "missingPolicy": "fail",
                 },
                 "repl": {
                     "id": "repl",

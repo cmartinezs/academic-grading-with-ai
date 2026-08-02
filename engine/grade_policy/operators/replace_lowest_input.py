@@ -13,6 +13,12 @@ Contract (C2-GRADE-POLICY-CONTRACT.md §6):
   effective weights; the output is a weighted average, never a sum;
 - no constant replacement is accepted.
 
+V1 target restriction (explicit limitation; see contract §6): the target must
+declare ``missingPolicy`` ``fail`` (or none) and must not declare a ``condition``.
+At runtime the target state is resolved before candidates are read and must be
+``value``; every candidate is present, so the original weights equal the
+effective weights (no exclusion or renormalization).
+
 The ``target``/``source`` reference edges are first-class DAG dependencies.
 """
 
@@ -67,6 +73,27 @@ def semantic_validate(
                     f"stage; got operator {target_stage.operator!r}.",
                 )
             )
+        else:
+            target_policy = target_stage.missing_policy
+            if target_policy not in (None, "fail"):
+                findings.append(
+                    (
+                        f"stages[{stage.id}]",
+                        f"replaceLowestInput target {target!r} must declare "
+                        f"missingPolicy fail (or none) in V1; got "
+                        f"{target_policy!r}. Every candidate must be present so the "
+                        "original weights equal the effective weights.",
+                    )
+                )
+            if target_stage.condition is not None:
+                findings.append(
+                    (
+                        f"stages[{stage.id}]",
+                        f"replaceLowestInput target {target!r} must not declare a "
+                        "condition in V1; the target must be an unconditional "
+                        "weightedAverage stage in state=value.",
+                    )
+                )
     source = stage.params.get("source")
     if source is not None and source not in policy.stages and source not in policy.assessments:
         findings.append(
@@ -117,6 +144,17 @@ def _evaluate(ctx, spec: StageSpec) -> EvalResult:
     if terminal is not None:
         return terminal
     source_value = src_resolved[0].value
+
+    # Resolve the target state before reading its candidates (V1 restriction):
+    # the target must be in state=value. A validated policy always reaches this
+    # point with a value target, but the guard keeps the operator fail-closed.
+    _, target_state, target_reason = ctx.resolve_ref(target)
+    if target_state != VALUE:
+        raise MissingInputError(
+            f"stages[{spec.id}].operator=replaceLowestInput: target {target!r} is not "
+            f"in state=value ({target_state}"
+            f"{f': {target_reason}' if target_reason else ''}); candidates cannot be read."
+        )
 
     candidate_refs = [inp.ref for inp in target_stage.inputs]
     weights = {inp.ref: (inp.weight or DZERO) for inp in target_stage.inputs}

@@ -104,6 +104,16 @@ publicación (los defaults efectivos se materializan en la policy).
 Matriz exacta implementada y probada (`test_missing_policies.py`); cualquier
 combinación fuera de la tabla es error de validación semántica.
 
+En V1 el target de `replaceLowestInput` queda restringido (limitación explícita,
+contrato §6): debe ser `weightedAverage` con `missingPolicy: fail` (o ausente) y
+sin `condition`; el runtime resuelve el estado del target antes de leer
+candidatos y exige `state=value`. Un target con `zero`,
+`excludeAndRenormalize`, `minimumOutput`, `pending`, `notApplicable` o
+`condition` es rechazado en validación. En `piecewiseLinearScale` con
+`missingPolicy: zero`, el cero se crea en la unidad del input ref (nunca
+`outputUnit`) y el check de rango corre antes de escalar (`reject` →
+`OutOfRangeError`; `clamp` → extremo).
+
 ## 8. Catálogo exacto de condiciones V1
 
 Cada condición va en `stage.condition` con `{"kind", "params"}`; la referencia
@@ -168,9 +178,10 @@ Semántica por operador (tabla en §7). Reglas globales:
 - `excludeAndRenormalize` solo aplica en `weightedAverage` (renormalización de
   pesos con decisión visible: `originalWeight`, `effectiveWeight`,
   `totalBefore`); con cero inputs presentes queda `pending`.
-- `zero` rellena con cero en la unidad esperada del stage (unidad declarada o
+- `zero` rellena con cero en la **unidad esperada del input** (unidad declarada o
   común inferida); con todos los inputs ausentes y unidad no declarada → error
-  tipado (`UnitMismatchError`).
+  tipado (`UnitMismatchError`). En `piecewiseLinearScale` (único conversor) el
+  cero usa la unidad del input ref y `_check_outside` corre antes de escalar.
 - `minimumOutput` requiere `params.minimum {value, unit}`; sin `minimum` en
   params falla la validación.
 - Toda decisión de missing aparece en el trace (`missingDecisions`).

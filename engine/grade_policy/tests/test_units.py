@@ -137,6 +137,28 @@ class UnitChainTest(unittest.TestCase):
         out = calculate(loaded, inputs_for(a=(90, "percent")), {"subjectId": "S"})
         self.assertEqual(out.value.unit, "grade")
 
+    def test_piecewise_zero_static_runtime_output_unit_parity(self) -> None:
+        from grade_policy.units import propagate_units
+
+        doc = policy(
+            resultStageId="scale",
+            stages={
+                "scale": stage(
+                    "scale", "conversion", "piecewiseLinearScale", [{"ref": "a"}],
+                    params={"outputUnit": "grade",
+                            "outsideRange": "clamp",
+                            "breakpoints": [{"x": "0", "y": "1"}, {"x": "60", "y": "4"}, {"x": "100", "y": "7"}]},
+                    missingPolicy="zero",
+                ),
+            },
+        )
+        loaded = load_policy(doc)
+        units = propagate_units(loaded)
+        self.assertEqual(units["scale"], "grade")
+        out = calculate(loaded, inputs_for(a=(None, "percent")), {"subjectId": "S"})
+        self.assertEqual(out.value.unit, units["scale"])
+        self.assertEqual(out.value.unit, "grade")
+
 
 class UnitValidationTest(unittest.TestCase):
     def test_static_mismatch_rejected(self) -> None:

@@ -48,10 +48,10 @@ Especifica los contratos tipados del motor de grade policy. Los schemas JSON
       "inputs": [],
       "params": {
         "target": "presentation-score",
-        "source": "EvG",
-        "condition": {"kind": "levelAtLeast", "params": {"ref": "EvG", "level": "4", "levels": ["1","2","3","4","5","6","7"]}},
+        "source": "PCT",
         "tiePolicy": "replaceFirst"
       },
+      "condition": {"kind": "levelAtLeast", "params": {"ref": "EvG", "level": "4", "levels": ["1","2","3","4","5","6","7"]}},
       "missingPolicy": "fail"
     },
     "final-scale": {
@@ -77,6 +77,12 @@ Especifica los contratos tipados del motor de grade policy. Los schemas JSON
   }
 }
 ```
+
+El documento de arriba es el **ejemplo oficial**: debe validar sin modificación,
+calcular un outcome final y generar un snapshot C2. El test de paridad lo copia
+literalmente desde este documento (extrae el bloque JSON de esta sección) y
+verifica validación, cálculo end-to-end y generación de snapshot sin ninguna
+transformación.
 
 ### Reglas del documento
 
@@ -140,8 +146,12 @@ El engine resuelve cada stage a un estado tipado (no binario presente/ausente):
   topológico usando `assessmentUnits` y la regla de unidad del operador. Solo
   reporta hallazgos sobre unidades conocidas estáticamente; las unidades no
   declaradas se resuelven en runtime y nunca se adivinan.
-- `zero` rellena con cero en la **unidad esperada del stage** (unidad declarada
-  del assessment o unidad común inferida); nunca usa una unidad global.
+- `zero` rellena con cero en la **unidad esperada del input** (unidad declarada
+  del assessment o unidad común inferida); nunca usa una unidad global. En
+  `piecewiseLinearScale` (único operador conversor) el cero se crea en la unidad
+  del input ref, nunca con `params.outputUnit`, y el check de rango
+  (`outsideRange`) se ejecuta **antes** de escalar: `reject` lanza
+  `OutOfRangeError` y `clamp` produce el extremo correspondiente.
 - `piecewiseLinearScale` es el único operador que convierte de unidad: exige
   `params.outputUnit` explícito (gate semántico; la unidad de salida no se
   adivina).
@@ -203,12 +213,32 @@ combinación es error de validación):
 
 ### `replaceLowestInput`
 
-- Params: `target` (stage `weightedAverage`), `source` (ref), `condition`
-  (obligatoria, `{"kind", "params"}` con `params.ref`), `tiePolicy` ∈
+- Params: `target` (stage `weightedAverage`), `source` (ref), `tiePolicy` ∈
   {`replaceFirst`, `replaceLast`}.
+- La condición va en `stage.condition` (ver §7); nunca en `params`.
 - Recalcula el promedio ponderado del target con el menor input presente
   reemplazado por el valor de `source`. No reemplaza más de un input.
 - Condición falsa → stage `skippedCondition` (`applied: false`, motivo en trace).
+
+#### Restricción del target en V1 (limitación explícita)
+
+En V1, el target de `replaceLowestInput` queda restringido para no ampliar el
+contexto de ejecución del operador:
+
+- `target` debe ser un stage `weightedAverage` con `missingPolicy: fail` (o
+  ausente, que equivale a `fail`).
+- `target` no puede declarar `condition`.
+- Al ejecutar, `target` debe estar en `state=value`; el runtime resuelve el
+  estado del target antes de leer sus candidatos.
+- Todos los candidatos del target deben estar presentes; sus pesos deben ser
+  positivos y sumar 1 (regla general de `weightedAverage`).
+- Bajo esta restricción, los pesos originales del target **son** los pesos
+  efectivos del reemplazo (no hay exclusión ni renormalización).
+
+El validator rechaza un target con `zero`, `excludeAndRenormalize`,
+`minimumOutput`, `pending`, `notApplicable` o `condition`. En runtime, un target
+que no esté en `state=value` falla cerrado con error tipado antes de leer
+candidatos.
 
 ### `cap`
 
@@ -238,8 +268,8 @@ antes que su fuente, y una ref inexistente o un ciclo se rechazan en validación
 {"kind": "levelAtLeast", "params": {"ref": "EvG", "level": "4", "levels": ["1","2","3","4","5","6","7"]}}
 {"kind": "assessmentPresent", "params": {"ref": "PCT"}}
 {"kind": "assessmentMissing", "params": {"ref": "EV2"}}
-{"kind": "scoreAtLeast", "params": {"ref": "EV1", "threshold": "60"}}
-{"kind": "scoreBelow", "params": {"ref": "EV1", "threshold": "60"}}
+{"kind": "scoreAtLeast", "params": {"ref": "EV1", "threshold": {"value": "60", "unit": "percent"}}}
+{"kind": "scoreBelow", "params": {"ref": "EV1", "threshold": {"value": "60", "unit": "percent"}}}
 ```
 
 - Cada condición tiene schema de `params` cerrado (`additionalProperties: false`).
@@ -385,6 +415,8 @@ matriz se rechaza en validación semántica (no por JSON Schema).
 - `excludeAndRenormalize` en `sum`, `round`, `additiveBonus`,
   `replaceLowestInput` o `piecewiseLinearScale`.
 - `zero`/`minimumOutput` en `round`, `additiveBonus` o `replaceLowestInput`.
+- `replaceLowestInput` con target `weightedAverage` cuyo `missingPolicy` no es
+  `fail` (o ausente) o que declara `condition` (limitación V1, ver §6).
 - `round` en fase `aggregation`.
 - `resultStageId` inexistente o inalcanzable.
 - Dependencia de un stage hacia una fase posterior.

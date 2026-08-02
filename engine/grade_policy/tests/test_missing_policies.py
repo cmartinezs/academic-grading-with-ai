@@ -15,6 +15,7 @@ from grade_policy import (
 )
 from grade_policy.errors import (
     MissingInputError,
+    OutOfRangeError,
     SemanticValidationError,
     UnitMismatchError,
 )
@@ -220,6 +221,89 @@ class WeightedAveragePolicyMatrixTest(unittest.TestCase):
         stages["w"]["phase"] = "finalization"
         with self.assertRaises(SemanticValidationError):
             load_policy(doc)
+
+
+class PiecewiseZeroTest(unittest.TestCase):
+    """piecewiseLinearScale with missingPolicy=zero: the zero is created in the
+    *input* ref's expected unit (never params.outputUnit), the range check runs
+    before scaling, and reject/clamp behave exactly like the present path."""
+
+    def _doc(self, breakpoints=None, outside_range: str = "clamp") -> dict:
+        return policy(
+            resultStageId="scale",
+            stages={
+                "scale": {
+                    "id": "scale",
+                    "phase": "conversion",
+                    "operator": "piecewiseLinearScale",
+                    "inputs": [{"ref": "a"}],
+                    "params": {
+                        "outputUnit": "grade",
+                        "outsideRange": outside_range,
+                        "breakpoints": breakpoints
+                        or [{"x": "0", "y": "1"}, {"x": "60", "y": "4"}, {"x": "100", "y": "7"}],
+                    },
+                    "missingPolicy": "zero",
+                }
+            },
+        )
+
+    def test_piecewise_zero_input_percent_output_grade(self) -> None:
+        doc = self._doc()
+        out = calculate(load_policy(doc), inputs_for(a=(None, "percent")), {"subjectId": "S"})
+        self.assertEqual(out.status, "finalized")
+        self.assertEqual(out.value.unit, "grade")
+        self.assertEqual(out.value.value, Decimal("1"))
+
+    def test_piecewise_zero_within_range(self) -> None:
+        out = calculate(
+            load_policy(self._doc()),
+            inputs_for(a=(None, "percent")),
+            {"subjectId": "S"},
+        )
+        # zero=0 lies inside [0, 100]; scale(0) hits the first breakpoint y=1.
+        self.assertEqual(out.value.value, Decimal("1"))
+
+    def test_piecewise_zero_outside_range_clamp(self) -> None:
+        out = calculate(
+            load_policy(self._doc(breakpoints=[{"x": "10", "y": "2"}, {"x": "60", "y": "4"}, {"x": "100", "y": "7"}])),
+            inputs_for(a=(None, "percent")),
+            {"subjectId": "S"},
+        )
+        # zero=0 < first breakpoint x=10; clamp yields the low extreme y=2.
+        self.assertEqual(out.value.value, Decimal("2"))
+        self.assertEqual(out.value.unit, "grade")
+
+    def test_piecewise_zero_outside_range_reject(self) -> None:
+        with self.assertRaises(OutOfRangeError):
+            calculate(
+                load_policy(self._doc(
+                    breakpoints=[{"x": "10", "y": "2"}, {"x": "60", "y": "4"}, {"x": "100", "y": "7"}],
+                    outside_range="reject",
+                )),
+                inputs_for(a=(None, "percent")),
+                {"subjectId": "S"},
+            )
+
+    def test_piecewise_zero_undeclared_input_unit_rejected(self) -> None:
+        doc = self._doc()
+        doc["assessmentUnits"] = {}
+        with self.assertRaises(UnitMismatchError):
+            calculate(load_policy(doc), inputs_for(a=(None, "percent")), {"subjectId": "S"})
+
+    def test_piecewise_zero_trace_preserves_decision(self) -> None:
+        out = calculate(
+            load_policy(self._doc()),
+            inputs_for(a=(None, "percent")),
+            {"subjectId": "S"},
+        )
+        ev = out.stages[0]
+        self.assertEqual(len(ev.missing_decisions), 1)
+        md = ev.missing_decisions[0]
+        self.assertEqual(md.ref, "a")
+        self.assertEqual(md.policy, "zero")
+        self.assertEqual(md.resulting_state, "value")
+        self.assertEqual(ev.state, "value")
 
 
 if __name__ == "__main__":

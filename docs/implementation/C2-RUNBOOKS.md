@@ -97,6 +97,26 @@ missing policies por operador está en
 `C2-GRADE-POLICY-CONTRACT.md` §6 (operador fuera de la matriz → error de
 validación semántica).
 
+### Limitación V1 de `replaceLowestInput`
+
+En V1 el target de `replaceLowestInput` queda restringido (detalle en el
+contrato §6): debe ser un stage `weightedAverage` con `missingPolicy: fail` (o
+ausente) y **sin** `condition`. El runtime resuelve el estado del target antes de
+leer candidatos y exige `state=value`; todos los candidatos están presentes, por
+lo que los pesos originales **son** los pesos efectivos del reemplazo. Un target
+con `zero`, `excludeAndRenormalize`, `minimumOutput`, `pending`, `notApplicable`
+o `condition` es rechazado en validación semántica.
+
+### `zero` en `piecewiseLinearScale`
+
+En `piecewiseLinearScale` (único operador conversor) con `missingPolicy: zero`,
+el cero se crea en la **unidad del input ref** (nunca con `params.outputUnit`) y
+luego fluye por los breakpoints hacia la unidad de salida. El check de rango se
+ejecuta antes de escalar: con `outsideRange: reject` un cero fuera del rango
+lanza `OutOfRangeError`; con `clamp` produce el extremo correspondiente. Si la
+unidad del input no está declarada, el backfill falla cerrado
+(`UnitMismatchError`).
+
 ### Estados tipados y missing policies
 
 `explain` y `calculate` usan estados tipados por stage:
@@ -200,7 +220,8 @@ Un build C2 fallido nunca deja un snapshot parcial bajo
 ```
 
 Ejecuta la suite unittest de C2 (conformance, DAG/condiciones, unidades,
-missing policies, estados tipados, trazas, property, paridad con los ejemplos
-oficiales del contrato, introspección de specs de operadores, sin errores
-crudos en runtime, integración de snapshot, inyección de fallos) y un escenario
-E2E sintético de `calculate`.
+missing policies incl. `zero` de `piecewiseLinearScale`, estados tipados, trazas,
+property, paridad con el ejemplo oficial §2 copiado literalmente del contrato,
+restricción V1 del target de `replaceLowestInput`, introspección de specs de
+operadores, sin errores crudos en runtime, integración de snapshot, inyección de
+fallos) y un escenario E2E sintético de `calculate`.

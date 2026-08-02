@@ -84,11 +84,11 @@ def _results_for(canonical: Mapping[str, object]) -> dict[tuple[str, str], dict]
     return index
 
 
-def _to_score(value) -> Optional[AcademicValue]:
+def _to_score(value, unit: str = "percent") -> Optional[AcademicValue]:
     if value is None or value == "":
         return None
     try:
-        return AcademicValue(Decimal(str(value)), "percent")
+        return AcademicValue(Decimal(str(value)), unit)
     except Exception:
         return None
 
@@ -124,11 +124,12 @@ def build_c2_payloads(
         assessments = {}
         for ref in policy.assessments:
             result = results_index.get((subject_id, ref))
-            present = result is not None and _to_score(result.get("score")) is not None
+            unit = policy.assessment_unit(ref) or "percent"
+            present = result is not None and _to_score(result.get("score"), unit) is not None
             assessments[ref] = AssessmentInput(
                 assessment_id=ref,
                 present=present,
-                value=_to_score(result.get("score")) if present else None,
+                value=_to_score(result.get("score"), unit) if present else None,
                 status=(result or {}).get("status") if present else None,
             )
         inputs = NormalizedInputs(subject_id=subject_id, assessments=assessments)
