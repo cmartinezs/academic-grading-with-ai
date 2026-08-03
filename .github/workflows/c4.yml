@@ -1,0 +1,63 @@
+name: C4 Secure Student Portal
+
+on:
+  push:
+    branches: [feat/c4-secure-portal]
+  pull_request:
+    branches: [master]
+
+jobs:
+  c4-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r engine/portal/requirements.txt pytest
+
+      - name: C4 unit, contract, integration, concurrency, privacy and E2E suite
+        run: ./scripts/portal.sh test
+
+      - name: C4 static app WebCrypto interop (Node <-> Python AES-GCM)
+        run: |
+          cd engine/portal/static
+          node --test tests/app.interop.test.js
+
+      - name: C3 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -q --tb=short -m "not network"
+
+      - name: C2 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/grade_policy/tests/ -q --tb=short
+
+      - name: C1 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/publication/tests/ -q --tb=short
+
+      - name: C0 regression
+        run: |
+          PYTHONPATH=engine python -m pytest engine/c0/tests/ -q --tb=short
+
+      - name: Strict scanner (no secrets, no PII in tracked files)
+        run: ./scripts/c0-scan.sh --tracked --strict
+
+  c4-no-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: C0 strict scanner
+        run: ./scripts/c0-scan.sh --tracked --strict

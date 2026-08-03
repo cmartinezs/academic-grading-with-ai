@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PortalApproval V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseId",
+    "releaseHash",
+    "objectCount",
+    "approvedBy",
+    "approvedAt",
+    "confirmation",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "releaseId": { "type": "string", "pattern": "^prelease_[0-9a-f]{24}$" },
+    "releaseHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "objectCount": { "type": "integer", "minimum": 0 },
+    "approvedBy": { "type": "string", "minLength": 1 },
+    "approvedAt": { "type": "string" },
+    "confirmation": { "type": "string", "const": "confirm-reviewed" },
+    "status": { "type": "string", "const": "approved" }
+  }
+}

@@ -63,6 +63,16 @@
       "reason": "C3 synthetic tests use fictional RUT/email-shaped identifiers and synthetic password config in fixtures; no real secrets."
     },
     {
+      "path": "engine/portal/tests/**",
+      "rules": ["chilean-rut", "email"],
+      "reason": "C4 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
+    },
+    {
+      "path": "engine/scripts/portal_test.py",
+      "rules": ["chilean-rut"],
+      "reason": "C4 synthetic E2E self-check uses a fictional RUT-shaped student id."
+    },
+    {
       "path": "docs/implementation/C3-*.md",
       "rules": ["secret-assignment"],
       "reason": "C3 documentation references the password variable name descriptively; no actual secrets."

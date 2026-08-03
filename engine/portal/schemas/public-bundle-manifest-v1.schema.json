@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PublicBundleManifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releaseId", "publicationId", "objectCount", "objects"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "releaseId": { "type": "string", "pattern": "^prelease_[0-9a-f]{24}$" },
+    "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "objectCount": { "type": "integer", "minimum": 0 },
+    "objects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectId", "artifactHash", "metadataHash", "ciphertextSha256"],
+      "properties": {
+        "objectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{24,64}$" },
+        "artifactHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "metadataHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "ciphertextSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

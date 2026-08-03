@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PortalReceipt V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receiptId",
+    "type",
+    "releaseId",
+    "createdAt"
+  ],
+  "properties": {
+    "receiptId": { "type": "string", "pattern": "^rcpt_[A-Za-z0-9_-]{1,64}$" },
+    "type": { "type": "string", "enum": ["publish", "revoke", "purge"] },
+    "releaseId": { "type": "string", "pattern": "^prelease_[0-9a-f]{24}$" },
+    "releaseHash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "createdAt": { "type": "string" },
+    "actor": { "type": ["string", "null"] },
+    "hostingProfileId": { "type": ["string", "null"] },
+    "publisherType": { "type": ["string", "null"] },
+    "publishedAt": { "type": ["string", "null"] },
+    "objectCount": { "type": ["integer", "null"], "minimum": 0 },
+    "deploymentReference": { "type": ["string", "null"] },
+    "artifactManifestHash": { "type": ["string", "null"] },
+    "result": { "type": ["string", "null"] },
+    "revokedAt": { "type": ["string", "null"] },
+    "reason": { "type": ["string", "null"] },
+    "requestedObjects": { "type": ["integer", "null"], "minimum": 0 },
+    "removedObjects": { "type": ["integer", "null"], "minimum": 0 },
+    "unavailableObjects": { "type": ["integer", "null"], "minimum": 0 },
+    "cacheLimitations": { "type": ["string", "null"] },
+    "purgedAt": { "type": ["string", "null"] },
+    "missingObjects": { "type": ["integer", "null"], "minimum": 0 },
+    "retainedAuditRecords": { "type": ["boolean", "null"] },
+    "externalLimitations": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "publish" } } },
+      "then": { "required": ["releaseHash", "hostingProfileId", "publisherType", "objectCount"] }
+    }
+  ]
+}
