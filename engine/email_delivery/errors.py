@@ -5,6 +5,14 @@ class EmailDeliveryError(Exception):
     """Base error for email delivery."""
 
 
+class ExecuteError(EmailDeliveryError):
+    """Execute workflow error."""
+
+
+class ExecuteBlockedError(ExecuteError):
+    """Execute blocked by gate, approval, tamper, identity, or lifecycle."""
+
+
 class PlanError(EmailDeliveryError):
     """Plan construction or validation error."""
 
@@ -13,8 +21,13 @@ class PlanExistsError(PlanError):
     """A different plan already exists under the same planId."""
 
 
-class PlanTamperedError(PlanError):
-    """Plan content does not match expected previewHash."""
+class PlanTamperedError(PlanError, ExecuteBlockedError):
+    """Plan or source snapshot no longer matches its approved hashes.
+
+    This is both a plan-validation error and an execute-blocking gate so direct
+    domain callers cannot accidentally treat source tampering as operationally
+    recoverable execution.
+    """
 
 
 class PlanRevokedError(PlanError):
@@ -108,8 +121,14 @@ class IdempotencyConflictError(LedgerError):
 class TransportError(EmailDeliveryError):
     """Transport-level error."""
 
-    def __init__(self, message: str, scope: str, retryability: str,
-                 delivery_certainty: str, code: str):
+    def __init__(
+        self,
+        message: str,
+        scope: str,
+        retryability: str,
+        delivery_certainty: str,
+        code: str,
+    ):
         super().__init__(message)
         self.scope = scope
         self.retryability = retryability
@@ -127,14 +146,6 @@ class BatchTransportError(TransportError):
 
 class RecipientTransportError(TransportError):
     """Recipient-scoped transport error (invalid, refused, timeout)."""
-
-
-class ExecuteError(EmailDeliveryError):
-    """Execute workflow error."""
-
-
-class ExecuteBlockedError(ExecuteError):
-    """Execute blocked by gate/approval/tamper/lifecycle."""
 
 
 class ReconcileError(EmailDeliveryError):
