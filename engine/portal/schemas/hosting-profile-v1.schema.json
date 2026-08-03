@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PortalHostingProfile V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profileId",
+    "mode",
+    "baseUrl",
+    "tlsRequired",
+    "directoryListingDisabled",
+    "headerPolicy",
+    "cachePolicy",
+    "supportsAtomicPromotion",
+    "supportsDelete",
+    "supportsPurge"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "profileId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "mode": { "type": "string", "enum": ["static-encrypted", "authenticated"] },
+    "baseUrl": { "type": "string", "minLength": 1 },
+    "tlsRequired": { "type": "boolean", "const": true },
+    "directoryListingDisabled": { "type": "boolean", "const": true },
+    "headerPolicy": { "type": "object" },
+    "cachePolicy": { "type": "object" },
+    "supportsAtomicPromotion": { "type": "boolean" },
+    "supportsDelete": { "type": "boolean" },
+    "supportsPurge": { "type": "boolean" },
+    "authorizationModel": { "type": ["string", "null"] }
+  }
+}

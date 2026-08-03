@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PortalReleasePlan V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseId",
+    "sectionId",
+    "publicationId",
+    "portalMode",
+    "portalAppVersion",
+    "snapshot",
+    "hostingProfileId",
+    "hostingProfile",
+    "releaseHash",
+    "objectCount",
+    "objects",
+    "manifest"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "releaseId": { "type": "string", "pattern": "^prelease_[0-9a-f]{24}$" },
+    "sectionId": { "type": "string" },
+    "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "portalMode": { "type": "string", "enum": ["static-encrypted", "authenticated"] },
+    "portalAppVersion": { "type": "string" },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentHash", "reviewHash", "mode"],
+      "properties": {
+        "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "reviewHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mode": { "type": "string", "enum": ["legacy-effective", "grade-policy-effective"] }
+      }
+    },
+    "hostingProfileId": { "type": "string" },
+    "hostingProfile": { "type": "object" },
+    "releaseHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "objectCount": { "type": "integer", "minimum": 0 },
+    "objects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/objectEntry" }
+    },
+    "manifest": { "type": "object" }
+  },
+  "$defs": {
+    "objectEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studentId", "objectId", "projectionHash", "artifactHash", "metadataHash"],
+      "properties": {
+        "studentId": { "type": "string", "pattern": "^stu_[A-Za-z0-9]{1,64}$" },
+        "objectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{24,64}$" },
+        "projectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "artifactHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "metadataHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

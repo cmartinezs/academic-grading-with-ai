@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StudentPortalView V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sectionId",
+    "publicationId",
+    "studentId",
+    "snapshotMode",
+    "assessments",
+    "generatedFrom"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "sectionId": { "type": "string" },
+    "publicationId": { "type": "string", "pattern": "^pub_[A-Za-z0-9]{1,64}$" },
+    "studentId": { "type": "string", "pattern": "^stu_[A-Za-z0-9]{1,64}$" },
+    "snapshotMode": { "type": "string", "enum": ["legacy-effective", "grade-policy-effective"] },
+    "assessments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assessment" }
+    },
+    "finalOutcome": { "anyOf": [{ "$ref": "#/$defs/finalOutcome" }, { "type": "null" }] },
+    "generatedFrom": { "type": "string" }
+  },
+  "$defs": {
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assessmentId", "label", "status"],
+      "properties": {
+        "assessmentId": { "type": "string" },
+        "label": { "type": "string" },
+        "status": { "type": "string" },
+        "score": { "type": ["string", "null"] },
+        "grade": { "type": ["string", "null"] },
+        "unit": { "type": ["string", "null"] },
+        "feedback": { "type": ["string", "null"] }
+      }
+    },
+    "finalOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "resultState", "finalizable"],
+      "properties": {
+        "value": { "type": "string" },
+        "unit": { "type": "string" },
+        "resultState": { "type": "string" },
+        "finalizable": { "type": "boolean" }
+      }
+    }
+  }
+}

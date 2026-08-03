@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilityManifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseId",
+    "portalMode",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "releaseId": { "type": "string", "pattern": "^prelease_[0-9a-f]{24}$" },
+    "portalMode": { "type": "string", "enum": ["static-encrypted", "authenticated"] },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studentId", "objectId", "projectionHash", "identityProjectionHash"],
+      "properties": {
+        "studentId": { "type": "string", "pattern": "^stu_[A-Za-z0-9]{1,64}$" },
+        "objectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{24,64}$" },
+        "projectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "identityProjectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "capabilityUrl": { "type": ["string", "null"] },
+        "key": { "type": ["string", "null"] },
+        "subjectRef": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
