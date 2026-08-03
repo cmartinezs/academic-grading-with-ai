@@ -14,5 +14,5 @@ class EmailTransport(ABC):
         ...
 
     @abstractmethod
-    def send(self, message, envelope: Envelope) -> TransportReceipt:
+    def send(self, message, envelope: Envelope, config: TransportConfig) -> TransportReceipt:
         ...

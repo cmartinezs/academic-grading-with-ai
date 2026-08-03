@@ -1,13 +1,12 @@
 """SMTP transport for C3 email delivery.
 
 Uses smtplib standard library. TLS required. One recipient per message.
-Password from TransportConfig or environment variable ACADGRAD_SMTP_PASSWORD.
-TransportConfig is the single authority; no re-reading from env during send.
+TransportConfig is the single authority; no env fallback during send.
+Password resolved before preflight; never serialized.
 """
 
 from __future__ import annotations
 
-import os
 import smtplib
 import ssl
 import uuid
@@ -22,8 +21,6 @@ from ..errors import (
 )
 from ..models import Envelope, TlsMode, TransportConfig, TransportReceipt
 from .base import EmailTransport
-
-SMTP_PASSWORD_ENV = "ACADGRAD_SMTP_PASSWORD"
 
 
 class SMTPTransport(EmailTransport):
@@ -55,8 +52,7 @@ class SMTPTransport(EmailTransport):
                 delivery_certainty="notSent",
                 code="smtp-username-missing",
             )
-        password = config.password or os.environ.get(SMTP_PASSWORD_ENV)
-        if not password:
+        if not config.password:
             raise BatchTransportError(
                 "SMTP password not set",
                 scope="batch",
@@ -65,7 +61,7 @@ class SMTPTransport(EmailTransport):
                 code="smtp-auth-missing",
             )
 
-    def send(self, message: EmailMessage, envelope: Envelope, config: Optional[TransportConfig] = None) -> TransportReceipt:
+    def send(self, message: EmailMessage, envelope: Envelope, config: TransportConfig) -> TransportReceipt:
         client_message_id = message.get("Message-ID", f"<{uuid.uuid4()}@localhost>")
 
         try:
@@ -74,24 +70,16 @@ class SMTPTransport(EmailTransport):
             if envelope.to_address and ('\r' in envelope.to_address or '\n' in envelope.to_address):
                 raise CRLFInjectionError("CRLF in to address")
 
-            if config is None:
-                config = TransportConfig(
-                    host=os.environ.get("ACADGRAD_SMTP_HOST", "localhost"),
-                    port=int(os.environ.get("ACADGRAD_SMTP_PORT", "587")),
-                    username=os.environ.get("ACADGRAD_SMTP_USERNAME", ""),
-                    password=os.environ.get(SMTP_PASSWORD_ENV, ""),
-                    tls_mode=TlsMode(os.environ.get("ACADGRAD_SMTP_TLS_MODE", "starttls")) if os.environ.get("ACADGRAD_SMTP_TLS_MODE") in ("starttls", "implicitTls") else TlsMode.STARTTLS,
-                )
-
             host = config.host
             port = config.port
             username = config.username
-            password = config.password or os.environ.get(SMTP_PASSWORD_ENV, "")
+            password = config.password
             tls_mode = config.tls_mode
+            timeout = config.timeout
 
             if tls_mode == TlsMode.IMPLICIT_TLS:
                 ctx = ssl.create_default_context()
-                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=self.timeout) as smtp:
+                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=timeout) as smtp:
                     smtp.login(username, password)
                     refused = smtp.send_message(message, from_addr=envelope.from_address, to_addrs=[envelope.to_address])
                     if refused:
@@ -104,7 +92,7 @@ class SMTPTransport(EmailTransport):
                             code=f"smtp-{code[0]}",
                         )
             else:
-                with smtplib.SMTP(host, port, timeout=self.timeout) as smtp:
+                with smtplib.SMTP(host, port, timeout=timeout) as smtp:
                     smtp.ehlo()
                     if not smtp.has_extn("starttls"):
                         raise BatchTransportError(

@@ -68,8 +68,33 @@ def prepare_plan(
     private_root: Path,
     temp_root: Path,
     lifecycle_ledger=None,
+    ledger=None,
     operation_id: Optional[str] = None,
 ) -> EmailPlan:
+    from .lifecycle import verify_email_source_snapshot, derive_snapshot_mode
+
+    verified_snapshot = verify_email_source_snapshot(
+        snapshot_dir=snapshot_dir,
+        section_id=section_id,
+        publication_id=publication_id,
+        lifecycle_ledger=lifecycle_ledger,
+    )
+
+    derived_mode = derive_snapshot_mode(snapshot_dir)
+    if derived_mode != snapshot_mode:
+        raise SnapshotNotApprovedError(
+            f"snapshotMode argument {snapshot_mode!r} does not match canonical/policy.json mode {derived_mode!r}"
+        )
+
+    if verified_snapshot.content_hash != snapshot_content_hash:
+        raise PlanTamperedError(
+            f"snapshot contentHash mismatch: verified {verified_snapshot.content_hash} vs provided {snapshot_content_hash}"
+        )
+    if verified_snapshot.review_hash != snapshot_review_hash:
+        raise PlanTamperedError(
+            f"snapshot reviewHash mismatch: verified {verified_snapshot.review_hash} vs provided {snapshot_review_hash}"
+        )
+
     if lifecycle_ledger is not None:
         state = lifecycle_ledger.current_state(publication_id)
         if state in SNAPSHOT_TERMINAL_STATES:
@@ -218,6 +243,18 @@ def prepare_plan(
 
     os.rename(str(staging_dir), str(plan_dir))
     _fsync_dir(plan_dir.parent)
+
+    if ledger is not None:
+        try:
+            ledger.register_template_version(
+                template_id=template.template_id,
+                template_version=template.template_version,
+                template_hash=template_hash,
+            )
+        except TemplateHashMismatchError:
+            raise PlanExistsError(
+                f"Template {template.template_id}/{template.template_version} already registered with different hash"
+            )
 
     return plan
 
@@ -436,13 +473,15 @@ def _build_plan_core(
     }
 
 
-def verify_plan_bundle(plan_dir: Path) -> dict:
+def verify_plan_bundle(plan_dir: Path) -> 'VerifiedEmailPlan':
     """Verify plan bundle integrity.
 
-    Returns VerifiedEmailPlan data on success.
+    Returns VerifiedEmailPlan on success.
     Raises PlanTamperedError on any mismatch.
     """
     from .errors import PlanTamperedError, SchemaValidationError
+    from .models import VerifiedEmailPlan
+    from .schemas import PLAN_SCHEMA_V1
 
     plan_path = plan_dir / "plan.json"
     manifest_path = plan_dir / "manifest.json"
@@ -455,6 +494,46 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
 
     plan_dict = read_json(plan_path)
     manifest = read_json(manifest_path)
+
+    try:
+        import jsonschema
+        jsonschema.validate(plan_dict, PLAN_SCHEMA_V1)
+    except ImportError:
+        pass
+    except jsonschema.ValidationError as exc:
+        raise SchemaValidationError(f"Plan JSON Schema validation failed: {exc.message}") from exc
+
+    MANIFEST_SCHEMA = {
+        "type": "object",
+        "required": ["schemaVersion", "planId", "files"],
+        "additionalProperties": False,
+        "properties": {
+            "schemaVersion": {"type": "string"},
+            "planId": {"type": "string"},
+            "files": {
+                "type": "object",
+                "additionalProperties": False,
+                "patternProperties": {
+                    "^.*$": {
+                        "type": "object",
+                        "required": ["sha256", "size"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                            "size": {"type": "integer", "minimum": 0},
+                        },
+                    },
+                },
+            },
+        },
+    }
+    try:
+        import jsonschema
+        jsonschema.validate(manifest, MANIFEST_SCHEMA)
+    except ImportError:
+        pass
+    except jsonschema.ValidationError as exc:
+        raise SchemaValidationError(f"Manifest JSON Schema validation failed: {exc.message}") from exc
 
     plan_id = plan_dict.get("planId", "")
     preview_hash = plan_dict.get("previewHash", "")
@@ -553,10 +632,10 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
         if missing:
             raise PlanTamperedError(f"Missing files in bundle: {missing}")
 
-    return {
-        "plan_id": plan_id,
-        "preview_hash": preview_hash,
-        "recipient_count": recipient_count,
-        "plan_dict": plan_dict,
-        "manifest": manifest,
-    }
+    return VerifiedEmailPlan(
+        plan_id=plan_id,
+        preview_hash=preview_hash,
+        recipient_count=recipient_count,
+        plan_dict=plan_dict,
+        manifest=manifest,
+    )

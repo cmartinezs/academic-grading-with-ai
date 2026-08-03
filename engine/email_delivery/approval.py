@@ -18,6 +18,7 @@ from .errors import (
     NotApprovedError,
     PlanTamperedError,
     SnapshotTerminalError,
+    TemplateHashMismatchError,
 )
 from .models import ApprovalRecord
 
@@ -48,17 +49,22 @@ def approve_plan(
 
     from .plan import verify_plan_bundle
     try:
-        verify_plan_bundle(plan_dir)
+        verified = verify_plan_bundle(plan_dir)
     except PlanTamperedError as exc:
         raise PlanTamperedError(f"Plan bundle verification failed: {exc}") from exc
 
-    plan_path = plan_dir / "plan.json"
-    if not plan_path.exists():
-        raise NotApprovedError(f"Plan not found: {plan_dir}")
+    plan_dict = verified.plan_dict
+    plan_preview_hash = verified.preview_hash
+    plan_recipient_count = verified.recipient_count
 
-    plan_dict = read_json(plan_path)
-    plan_preview_hash = plan_dict.get("previewHash", "")
-    plan_recipient_count = plan_dict.get("recipientCount", 0)
+    template_id = plan_dict.get("templateId", "")
+    template_version = plan_dict.get("templateVersion", "")
+    template_hash = plan_dict.get("templateHash", "")
+    if template_id and template_version and template_hash:
+        try:
+            ledger.register_template_version(template_id, template_version, template_hash)
+        except TemplateHashMismatchError as exc:
+            raise PlanTamperedError(f"Template registry mismatch: {exc}") from exc
 
     if plan_preview_hash != preview_hash:
         raise ApprovalMismatchError(

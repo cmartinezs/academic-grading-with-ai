@@ -247,6 +247,16 @@ class TransportConfig:
     def __repr__(self) -> str:
         return f"TransportConfig(host={self.host!r}, port={self.port!r}, username={self.username!r}, tls_mode={self.tls_mode!r}, use_tls={self.use_tls!r}, timeout={self.timeout!r})"
 
+    def to_dict(self) -> dict:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "username": self.username,
+            "tls_mode": self.tls_mode.value,
+            "use_tls": self.use_tls,
+            "timeout": self.timeout,
+        }
+
 
 @dataclass
 class DeliveryRecord:

@@ -49,7 +49,7 @@ class FakeTransport(EmailTransport):
                 code="fake-auth-failure",
             )
 
-    def send(self, message, envelope: Envelope) -> TransportReceipt:
+    def send(self, message, envelope: Envelope, config: TransportConfig) -> TransportReceipt:
         if self.behavior == FakeBehavior.AUTH_FAILURE:
             raise BatchTransportError(
                 "Fake auth failure",

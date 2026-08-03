@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .approval import verify_approval
-from .canonical import compute_identity_projection_hash, read_json
+from .canonical import compute_identity_projection_hash
 from .errors import (
     BatchTransportError,
     ExecuteBlockedError,
@@ -19,14 +19,17 @@ from .errors import (
     IdentityDriftError,
     LedgerError,
     NotApprovedError,
+    PlanTamperedError,
     RecipientTransportError,
     SnapshotTerminalError,
+    TemplateHashMismatchError,
     TransportError,
 )
 from .ledger import EmailLedger
 from .lifecycle import check_identity_drift, check_snapshot_sendable
 from .masking import mask_email
 from .models import DeliveryState, EmailPlan, Envelope, ExecuteOutcome, TransportReceipt
+from .plan import verify_plan_bundle
 from .recipients import normalize_email
 from .transport.base import EmailTransport
 from .transport.fake import FakeTransport, FakeBehavior
@@ -51,13 +54,29 @@ def execute_plan(
     if not confirm_send:
         raise ExecuteError("confirm_send is required for execution.")
 
-    plan_path = plan_dir / "plan.json"
-    if not plan_path.exists():
+    if not plan_dir.exists():
         raise ExecuteBlockedError(f"Plan not found: {plan_dir}")
 
-    plan_dict = read_json(plan_path)
-    if plan_dict.get("previewHash") != preview_hash:
+    try:
+        verified = verify_plan_bundle(plan_dir)
+    except PlanTamperedError as exc:
+        raise ExecuteBlockedError(f"Plan bundle verification failed: {exc}") from exc
+
+    if verified.plan_id != plan_id:
+        raise ExecuteBlockedError(f"planId mismatch: bundle has {verified.plan_id}, expected {plan_id}")
+    if verified.preview_hash != preview_hash:
         raise ExecuteBlockedError("previewHash mismatch.")
+
+    plan_dict = verified.plan_dict
+
+    template_id = plan_dict.get("templateId", "")
+    template_version = plan_dict.get("templateVersion", "")
+    template_hash = plan_dict.get("templateHash", "")
+    if template_id and template_version and template_hash:
+        try:
+            ledger.register_template_version(template_id, template_version, template_hash)
+        except TemplateHashMismatchError as exc:
+            raise ExecuteBlockedError(f"Template registry mismatch: {exc}") from exc
 
     try:
         verify_approval(plan_id, preview_hash, ledger)
@@ -158,9 +177,9 @@ def execute_plan(
                     identity_projection_hash=identity_projection_hash,
                     client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                 )
-            except LedgerError:
-                blocked_count += 1
-                continue
+            except LedgerError as exc:
+                batch_transport_error = True
+                break
 
             if action == "sent":
                 skipped_count += 1
@@ -186,9 +205,9 @@ def execute_plan(
                     to_state=DeliveryState.SENDING,
                     client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                 )
-            except LedgerError:
-                blocked_count += 1
-                continue
+            except LedgerError as exc:
+                batch_transport_error = True
+                break
 
             envelope = Envelope(
                 from_address=from_address,
@@ -206,7 +225,7 @@ def execute_plan(
             )
 
             try:
-                receipt = transport.send(msg, envelope)
+                receipt = transport.send(msg, envelope, transport_config)
                 if receipt.accepted:
                     ledger.transition_delivery(
                         delivery_id=delivery_id,
@@ -285,12 +304,13 @@ def execute_plan(
                     )
                 batch_transport_error = True
                 break
-            except LedgerError:
-                blocked_count += 1
+            except LedgerError as exc:
+                ambiguous_count += 1
+                batch_transport_error = True
                 break
 
     except LedgerError:
-        blocked_count += 1
+        batch_transport_error = True
 
     if blocked_count > 0 and sent_count == 0 and ambiguous_count == 0 and failed_count == 0:
         outcome = ExecuteOutcome.BLOCKED
@@ -298,17 +318,13 @@ def execute_plan(
         outcome = ExecuteOutcome.PAUSED
     elif snapshot_terminal and sent_count > 0:
         outcome = ExecuteOutcome.PARTIAL
+    elif ambiguous_count > 0:
+        outcome = ExecuteOutcome.AMBIGUOUS
     elif batch_transport_error:
         if sent_count > 0:
             outcome = ExecuteOutcome.PARTIAL
         else:
             outcome = ExecuteOutcome.BLOCKED
-    elif blocked_count > 0 and ambiguous_count > 0:
-        outcome = ExecuteOutcome.AMBIGUOUS
-    elif ambiguous_count > 0 and sent_count > 0:
-        outcome = ExecuteOutcome.AMBIGUOUS
-    elif ambiguous_count > 0 and sent_count == 0:
-        outcome = ExecuteOutcome.AMBIGUOUS
     elif paused_count > 0 and sent_count > 0:
         outcome = ExecuteOutcome.PARTIAL
     elif blocked_count > 0 and sent_count > 0:
@@ -332,7 +348,30 @@ def execute_plan(
             outcome=outcome.value,
             blocked_count=blocked_count,
         )
-    except LedgerError:
-        pass
+    except LedgerError as exc:
+        recovery_marker_path = plan_dir / ".recovery" / f"batch-{batch_run_id}.json"
+        try:
+            recovery_marker_path.parent.mkdir(parents=True, exist_ok=True)
+            import json as _json
+            recovery_marker_path.write_text(_json.dumps({
+                "batchRunId": batch_run_id,
+                "planId": plan_id,
+                "previewHash": preview_hash,
+                "sentCount": sent_count,
+                "failedCount": failed_count,
+                "ambiguousCount": ambiguous_count,
+                "skippedCount": skipped_count,
+                "blockedCount": blocked_count,
+                "outcome": outcome.value,
+                "error": str(exc),
+            }, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
+        raise
 
     return outcome
+
+
+def inspect_plan(plan_dir: Path) -> 'VerifiedEmailPlan':
+    from .models import VerifiedEmailPlan
+    return verify_plan_bundle(plan_dir)
