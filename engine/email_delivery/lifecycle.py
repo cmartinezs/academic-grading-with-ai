@@ -1,36 +1,45 @@
-"""Lifecycle checks for C3 email delivery.
+"""Lifecycle and source-snapshot gates for C3 email delivery.
 
-Verifies snapshot state, identity drift, and approval validity.
+C3 never trusts a publication manifest by inspection alone.  The canonical C1
+verifier is the authority for contract, semantic, privacy, manifest,
+classification, lifecycle, and immutability gates.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from .canonical import compute_identity_projection_hash, compute_hash, read_json, sha256_file
+from .canonical import compute_identity_projection_hash, read_json
 from .errors import (
     IdentityDriftError,
     PlanTamperedError,
     SnapshotNotApprovedError,
     SnapshotTerminalError,
 )
+from .recipients import normalize_email
 
 SNAPSHOT_TERMINAL_STATES = frozenset({"revoked", "corrected", "superseded"})
 SNAPSHOT_SENDABLE_STATES = frozenset({"approved"})
 
 
 def check_snapshot_sendable(lifecycle_ledger, publication_id: str) -> str:
+    if lifecycle_ledger is None:
+        raise SnapshotTerminalError(
+            "lifecycle_ledger is required for snapshot verification — fail closed"
+        )
     state = lifecycle_ledger.current_state(publication_id)
     if state in SNAPSHOT_TERMINAL_STATES:
         raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
     if state not in SNAPSHOT_SENDABLE_STATES:
-        raise SnapshotNotApprovedError(f"Snapshot state is {state}, expected approved.")
+        raise SnapshotNotApprovedError(
+            f"Snapshot state is {state}, expected approved."
+        )
     return state
 
 
 def check_identity_drift(plan_dict: dict, identity_store) -> list[str]:
-    drifts = []
+    drifts: list[str] = []
     for recipient in plan_dict.get("recipients", []):
         student_id = recipient.get("studentId")
         stored_hash = recipient.get("identityProjectionHash")
@@ -40,7 +49,14 @@ def check_identity_drift(plan_dict: dict, identity_store) -> list[str]:
             continue
         email = (identity.contact or {}).get("email", "")
         display_name = identity.display_name or ""
-        current_hash = compute_identity_projection_hash(student_id, display_name, email)
+        try:
+            normalized = normalize_email(email)
+        except Exception:
+            drifts.append(f"Identity contact invalid for {student_id}")
+            continue
+        current_hash = compute_identity_projection_hash(
+            student_id, display_name, normalized
+        )
         if current_hash != stored_hash:
             drifts.append(f"Identity drift for {student_id}")
     return drifts
@@ -51,35 +67,35 @@ def check_plan_integrity(plan_dir: Path, plan_id: str, preview_hash: str) -> boo
     if not plan_path.exists():
         return False
     plan_dict = read_json(plan_path)
-    if plan_dict.get("planId") != plan_id:
-        return False
-    if plan_dict.get("previewHash") != preview_hash:
-        return False
-    return True
+    return (
+        plan_dict.get("planId") == plan_id
+        and plan_dict.get("previewHash") == preview_hash
+    )
 
 
 def derive_snapshot_mode(snapshot_dir: Path) -> str:
     policy_path = snapshot_dir / "canonical" / "policy.json"
     if not policy_path.exists():
-        raise SnapshotTerminalError("canonical/policy.json missing from snapshot — cannot derive snapshotMode")
+        raise SnapshotTerminalError(
+            "canonical/policy.json missing from snapshot — cannot derive snapshotMode"
+        )
     policy = read_json(policy_path)
     mode = policy.get("mode")
     if mode not in ("legacy-effective", "grade-policy-effective"):
-        raise SnapshotTerminalError(f"Invalid snapshot mode in canonical/policy.json: {mode!r}")
-    return mode
+        raise SnapshotTerminalError(
+            f"Invalid snapshot mode in canonical/policy.json: {mode!r}"
+        )
+    return str(mode)
 
 
+@dataclass(frozen=True)
 class VerifiedSnapshot:
-    __slots__ = ("content_hash", "review_hash", "section_id", "publication_id", "snapshot_mode", "lifecycle_state")
-
-    def __init__(self, content_hash: str, review_hash: str, section_id: str,
-                 publication_id: str, snapshot_mode: str, lifecycle_state: str):
-        self.content_hash = content_hash
-        self.review_hash = review_hash
-        self.section_id = section_id
-        self.publication_id = publication_id
-        self.snapshot_mode = snapshot_mode
-        self.lifecycle_state = lifecycle_state
+    content_hash: str
+    review_hash: str
+    section_id: str
+    publication_id: str
+    snapshot_mode: str
+    lifecycle_state: str
 
 
 def verify_email_source_snapshot(
@@ -88,45 +104,43 @@ def verify_email_source_snapshot(
     publication_id: str,
     lifecycle_ledger=None,
 ) -> VerifiedSnapshot:
-    manifest_path = snapshot_dir / "manifest.json"
-    if not manifest_path.exists():
-        raise PlanTamperedError("Snapshot manifest.json missing")
+    """Verify an approved immutable C1 snapshot and its operational lifecycle."""
+    from publication.verify import verify_snapshot
 
-    manifest = read_json(manifest_path)
-    content_hash = manifest.get("contentHash", "")
-    review_hash = manifest.get("reviewHash", "")
+    snapshot_dir = Path(snapshot_dir)
+    report = verify_snapshot(
+        snapshot_dir,
+        section_id=section_id,
+        publication_id=publication_id,
+        immutable=True,
+    )
+    if not report.passed():
+        gates = sorted({finding.gate for finding in report.findings})
+        gate_summary = ",".join(gates) if gates else "unknown"
+        raise PlanTamperedError(
+            "Snapshot verification failed "
+            f"({len(report.findings)} finding(s); gates={gate_summary})."
+        )
 
-    if not content_hash or len(content_hash) != 64:
-        raise PlanTamperedError("Snapshot manifest contentHash invalid")
+    manifest = read_json(snapshot_dir / "manifest.json")
+    if manifest.get("status") != "approved":
+        raise SnapshotNotApprovedError(
+            f"Snapshot manifest status is {manifest.get('status')!r}, expected approved."
+        )
 
-    canonical_dir = snapshot_dir / "canonical"
-    if not canonical_dir.exists():
-        raise PlanTamperedError("Snapshot canonical/ directory missing")
+    content_hash = manifest.get("contentHash")
+    review_hash = manifest.get("reviewHash")
+    if not isinstance(content_hash, str) or not isinstance(review_hash, str):
+        raise PlanTamperedError("Verified snapshot is missing immutable hashes.")
 
-    policy_path = canonical_dir / "policy.json"
-    if not policy_path.exists():
-        raise PlanTamperedError("Snapshot canonical/policy.json missing — cannot verify policy mode")
-
-    policy = read_json(policy_path)
-    snapshot_mode = policy.get("mode")
-    if snapshot_mode not in ("legacy-effective", "grade-policy-effective"):
-        raise PlanTamperedError(f"Invalid snapshot mode in canonical/policy.json: {snapshot_mode!r}")
-
-    if lifecycle_ledger is not None:
-        state = lifecycle_ledger.current_state(publication_id)
-        if state in SNAPSHOT_TERMINAL_STATES:
-            raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
-        if state != "approved":
-            raise SnapshotNotApprovedError(f"Snapshot state is {state}, expected approved.")
-        lifecycle_state = state
-    else:
-        raise SnapshotTerminalError("lifecycle_ledger is required for snapshot verification — fail closed")
+    snapshot_mode = derive_snapshot_mode(snapshot_dir)
+    lifecycle_state = check_snapshot_sendable(lifecycle_ledger, publication_id)
 
     return VerifiedSnapshot(
         content_hash=content_hash,
         review_hash=review_hash,
-        section_id=section_id,
-        publication_id=publication_id,
+        section_id=str(manifest.get("sectionId")),
+        publication_id=str(manifest.get("publicationId")),
         snapshot_mode=snapshot_mode,
         lifecycle_state=lifecycle_state,
     )
