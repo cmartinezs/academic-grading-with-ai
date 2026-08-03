@@ -1,20 +1,19 @@
 """Email plan preparation for C3 email delivery.
 
-Prepare never sends. It builds the deterministic plan from an approved snapshot,
-identity store, template, and sender profile.
+Prepare never sends. It builds a deterministic private plan from a verified,
+approved Publication Snapshot, the private identity store, a versioned template,
+and a sender profile.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from .canonical import (
-    compute_hash,
     compute_identity_projection_hash,
     compute_idempotency_key,
     compute_item_hash,
@@ -31,16 +30,45 @@ from .errors import (
     MissingIdentityError,
     PlanExistsError,
     PlanTamperedError,
+    SchemaValidationError,
     SnapshotNotApprovedError,
-    SnapshotTerminalError,
+    TemplateHashMismatchError,
 )
 from .masking import mask_email
-from .models import EmailPlan, PlanRecipient, SnapshotMode
+from .models import EmailPlan, PlanRecipient, VerifiedEmailPlan
 from .recipients import normalize_email
 from .renderer import build_results_block, render
 from .templates import load_template
 
-SNAPSHOT_TERMINAL_STATES = frozenset({"revoked", "corrected", "superseded"})
+
+MANIFEST_SCHEMA_V1 = {
+    "type": "object",
+    "required": ["schemaVersion", "planId", "files"],
+    "additionalProperties": False,
+    "properties": {
+        "schemaVersion": {"const": "1.0.0"},
+        "planId": {"type": "string", "pattern": "^eplan_[0-9a-f]{24}$"},
+        "files": {
+            "type": "object",
+            "minProperties": 2,
+            "additionalProperties": False,
+            "patternProperties": {
+                "^(plan\\.json|previews/[A-Za-z0-9._-]+\\.txt)$": {
+                    "type": "object",
+                    "required": ["sha256", "size"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "sha256": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{64}$",
+                        },
+                        "size": {"type": "integer", "minimum": 0},
+                    },
+                }
+            },
+        },
+    },
+}
 
 
 def _fsync_dir(path: Path) -> None:
@@ -51,17 +79,13 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def prepare_plan(
     section_id: str,
     publication_id: str,
     snapshot_dir: Path,
-    snapshot_content_hash: str,
-    snapshot_review_hash: str,
-    snapshot_mode: str,
+    snapshot_content_hash: Optional[str],
+    snapshot_review_hash: Optional[str],
+    snapshot_mode: Optional[str],
     template_path: Path,
     sender_profile_path: Path,
     identity_store,
@@ -71,51 +95,62 @@ def prepare_plan(
     ledger=None,
     operation_id: Optional[str] = None,
 ) -> EmailPlan:
-    from .lifecycle import verify_email_source_snapshot, derive_snapshot_mode
+    """Prepare and atomically promote a private, immutable email plan bundle.
+
+    The three snapshot_* arguments are retained as compatibility assertions for
+    existing callers.  The verified snapshot is always authoritative.
+    """
+    del temp_root  # staging intentionally lives below private_root for atomic rename
+
+    from .lifecycle import verify_email_source_snapshot
 
     verified_snapshot = verify_email_source_snapshot(
-        snapshot_dir=snapshot_dir,
+        snapshot_dir=Path(snapshot_dir),
         section_id=section_id,
         publication_id=publication_id,
         lifecycle_ledger=lifecycle_ledger,
     )
 
-    derived_mode = derive_snapshot_mode(snapshot_dir)
-    if derived_mode != snapshot_mode:
+    if snapshot_content_hash and verified_snapshot.content_hash != snapshot_content_hash:
+        raise PlanTamperedError("Provided snapshot contentHash does not match verified snapshot.")
+    if snapshot_review_hash and verified_snapshot.review_hash != snapshot_review_hash:
+        raise PlanTamperedError("Provided snapshot reviewHash does not match verified snapshot.")
+    if snapshot_mode and verified_snapshot.snapshot_mode != snapshot_mode:
         raise SnapshotNotApprovedError(
-            f"snapshotMode argument {snapshot_mode!r} does not match canonical/policy.json mode {derived_mode!r}"
+            "Provided snapshotMode does not match canonical/policy.json."
         )
 
-    if verified_snapshot.content_hash != snapshot_content_hash:
-        raise PlanTamperedError(
-            f"snapshot contentHash mismatch: verified {verified_snapshot.content_hash} vs provided {snapshot_content_hash}"
-        )
-    if verified_snapshot.review_hash != snapshot_review_hash:
-        raise PlanTamperedError(
-            f"snapshot reviewHash mismatch: verified {verified_snapshot.review_hash} vs provided {snapshot_review_hash}"
-        )
+    effective_content_hash = verified_snapshot.content_hash
+    effective_review_hash = verified_snapshot.review_hash
+    effective_mode = verified_snapshot.snapshot_mode
 
-    if lifecycle_ledger is not None:
-        state = lifecycle_ledger.current_state(publication_id)
-        if state in SNAPSHOT_TERMINAL_STATES:
-            raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
-        if state != "approved":
-            raise SnapshotNotApprovedError(f"Snapshot state is {state}, expected approved.")
+    template = load_template(Path(template_path))
+    template_hash = compute_template_hash(template.to_dict())
 
-    template = load_template(template_path)
-    template_dict = template.to_dict()
-    template_hash = compute_template_hash(template_dict)
+    # Template identity is an operational invariant.  Check it before any
+    # destination directory is promoted.
+    if ledger is not None:
+        try:
+            ledger.register_template_version(
+                template_id=template.template_id,
+                template_version=template.template_version,
+                template_hash=template_hash,
+            )
+        except TemplateHashMismatchError as exc:
+            raise PlanExistsError(
+                "Template id/version is already registered with different content."
+            ) from exc
 
-    sender_profile = read_json(sender_profile_path)
+    sender_profile = read_json(Path(sender_profile_path))
     from_address = normalize_email(sender_profile["fromAddress"])
     reply_to = None
     if sender_profile.get("replyTo"):
         reply_to = normalize_email(sender_profile["replyTo"])
 
-    subjects_data = _load_subjects(snapshot_dir)
-    results_data = _load_results(snapshot_dir)
-    outcomes_data = _load_outcomes(snapshot_dir)
-    assessments_data = _load_assessments(snapshot_dir)
+    subjects_data = _load_subjects(Path(snapshot_dir))
+    results_data = _load_results(Path(snapshot_dir))
+    outcomes_data = _load_outcomes(Path(snapshot_dir))
+    assessments_data = _load_assessments(Path(snapshot_dir))
 
     recipients = _build_recipients(
         section_id=section_id,
@@ -124,7 +159,7 @@ def prepare_plan(
         results_data=results_data,
         outcomes_data=outcomes_data,
         assessments_data=assessments_data,
-        snapshot_mode=snapshot_mode,
+        snapshot_mode=effective_mode,
         template=template,
         identity_store=identity_store,
     )
@@ -132,9 +167,9 @@ def prepare_plan(
     plan_core = _build_plan_core(
         section_id=section_id,
         publication_id=publication_id,
-        snapshot_content_hash=snapshot_content_hash,
-        snapshot_review_hash=snapshot_review_hash,
-        snapshot_mode=snapshot_mode,
+        snapshot_content_hash=effective_content_hash,
+        snapshot_review_hash=effective_review_hash,
+        snapshot_mode=effective_mode,
         template=template,
         template_hash=template_hash,
         sender_profile_id=sender_profile.get("senderProfileId", "default"),
@@ -142,7 +177,6 @@ def prepare_plan(
         reply_to=reply_to,
         recipients=recipients,
     )
-
     preview_hash = compute_preview_hash(plan_core)
     plan_id = derive_plan_id(preview_hash)
 
@@ -151,9 +185,9 @@ def prepare_plan(
         plan_id=plan_id,
         section_id=section_id,
         publication_id=publication_id,
-        snapshot_content_hash=snapshot_content_hash,
-        snapshot_review_hash=snapshot_review_hash,
-        snapshot_mode=snapshot_mode,
+        snapshot_content_hash=effective_content_hash,
+        snapshot_review_hash=effective_review_hash,
+        snapshot_mode=effective_mode,
         template_id=template.template_id,
         template_version=template.template_version,
         template_hash=template_hash,
@@ -166,127 +200,146 @@ def prepare_plan(
         preview_hash=preview_hash,
     )
 
-    plan_dir = private_root / "email" / "plans" / section_id / publication_id / plan_id
-    existing_plan_path = plan_dir / "plan.json"
-    if existing_plan_path.exists():
+    plan_dir = (
+        Path(private_root)
+        / "email"
+        / "plans"
+        / section_id
+        / publication_id
+        / plan_id
+    )
+    if plan_dir.exists():
         try:
-            verify_plan_bundle(plan_dir)
-        except PlanTamperedError:
-            raise PlanExistsError(f"Existing plan at {plan_dir} fails bundle verification")
-        existing = read_json(existing_plan_path)
-        existing_json = json.dumps(existing, sort_keys=True)
-        new_json = json.dumps(plan.to_dict(), sort_keys=True)
-        if existing_json == new_json:
+            verified_existing = verify_plan_bundle(plan_dir)
+        except (PlanTamperedError, SchemaValidationError) as exc:
+            raise PlanExistsError("Existing plan bundle fails verification.") from exc
+        if verified_existing.plan_dict == plan.to_dict():
             return plan
-        raise PlanExistsError(f"A different plan already exists at {plan_dir}")
+        raise PlanExistsError("A different plan already exists for this planId.")
 
-    import uuid as _uuid
-    staging_id = operation_id or f"{plan_id}-{_uuid.uuid4().hex[:12]}"
-    staging_base = private_root / "email" / "plans" / section_id / publication_id / ".staging"
+    staging_id = operation_id or f"{plan_id}-{uuid.uuid4().hex[:12]}"
+    staging_base = plan_dir.parent / ".staging"
     staging_dir = staging_base / staging_id
     if staging_dir.exists():
-        import shutil
-        shutil.rmtree(staging_dir)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        staging_dir.chmod(0o700)
-    except OSError:
-        pass
-    for parent in [staging_dir, staging_base, staging_base.parent, staging_base.parent.parent]:
+        raise PlanExistsError("Email plan staging operation already exists.")
+
+    staging_dir.mkdir(parents=True, exist_ok=False)
+    for parent in (
+        staging_dir,
+        staging_base,
+        staging_base.parent,
+        staging_base.parent.parent,
+    ):
         try:
             parent.chmod(0o700)
         except OSError:
             pass
 
-    plan_json_path = staging_dir / "plan.json"
-    write_json(plan_json_path, plan.to_dict())
-
-    previews_dir = staging_dir / "previews"
-    previews_dir.mkdir(parents=True, exist_ok=True)
     try:
-        previews_dir.chmod(0o700)
-    except OSError:
-        pass
-    manifest_files = {"plan.json": {"sha256": sha256_file(plan_json_path), "size": plan_json_path.stat().st_size}}
-    for recipient in recipients:
-        preview_path = previews_dir / f"{recipient.student_id}.txt"
-        preview_path.write_text(recipient.text_body, encoding="utf-8")
-        rel = f"previews/{recipient.student_id}.txt"
-        manifest_files[rel] = {"sha256": sha256_file(preview_path), "size": preview_path.stat().st_size}
+        plan_json_path = staging_dir / "plan.json"
+        write_json(plan_json_path, plan.to_dict())
 
-    manifest = {
-        "schemaVersion": "1.0.0",
-        "planId": plan_id,
-        "files": manifest_files,
-    }
-    manifest_path = staging_dir / "manifest.json"
-    write_json(manifest_path, manifest)
-
-    for f in staging_dir.rglob("*"):
-        if f.is_file():
-            try:
-                os.chmod(str(f), 0o600)
-            except OSError:
-                pass
-
-    for f in staging_dir.rglob("*"):
-        if f.is_file():
-            fd = os.open(str(f), os.O_RDONLY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-    _fsync_dir(staging_dir)
-    if previews_dir.exists():
-        _fsync_dir(previews_dir)
-    _fsync_dir(staging_dir.parent)
-
-    os.rename(str(staging_dir), str(plan_dir))
-    _fsync_dir(plan_dir.parent)
-
-    if ledger is not None:
+        previews_dir = staging_dir / "previews"
+        previews_dir.mkdir(parents=True, exist_ok=False)
         try:
-            ledger.register_template_version(
-                template_id=template.template_id,
-                template_version=template.template_version,
-                template_hash=template_hash,
-            )
-        except TemplateHashMismatchError:
-            raise PlanExistsError(
-                f"Template {template.template_id}/{template.template_version} already registered with different hash"
-            )
+            previews_dir.chmod(0o700)
+        except OSError:
+            pass
+
+        manifest_files = {
+            "plan.json": {
+                "sha256": sha256_file(plan_json_path),
+                "size": plan_json_path.stat().st_size,
+            }
+        }
+        for recipient in recipients:
+            preview_path = previews_dir / f"{recipient.student_id}.txt"
+            preview_path.write_text(recipient.text_body, encoding="utf-8")
+            rel = f"previews/{recipient.student_id}.txt"
+            manifest_files[rel] = {
+                "sha256": sha256_file(preview_path),
+                "size": preview_path.stat().st_size,
+            }
+
+        manifest = {
+            "schemaVersion": "1.0.0",
+            "planId": plan_id,
+            "files": manifest_files,
+        }
+        write_json(staging_dir / "manifest.json", manifest)
+
+        for file_path in staging_dir.rglob("*"):
+            if file_path.is_file():
+                try:
+                    file_path.chmod(0o600)
+                except OSError:
+                    pass
+                fd = os.open(str(file_path), os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+
+        _fsync_dir(previews_dir)
+        _fsync_dir(staging_dir)
+        _fsync_dir(staging_dir.parent)
+
+        # Verify the exact staged bytes before the single atomic promotion.
+        # The verifier binds directory basename to planId, so use a temporary
+        # planId-shaped alias within staging for this pre-promotion check.
+        _verify_staged_bundle(staging_dir, plan_id)
+
+        os.rename(str(staging_dir), str(plan_dir))
+        _fsync_dir(plan_dir.parent)
+    except Exception:
+        if staging_dir.exists():
+            import shutil
+
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     return plan
+
+
+def _verify_staged_bundle(staging_dir: Path, plan_id: str) -> None:
+    """Verify staging content without weakening the final dirname binding."""
+    plan_dict = read_json(staging_dir / "plan.json")
+    manifest = read_json(staging_dir / "manifest.json")
+    if plan_dict.get("planId") != plan_id or manifest.get("planId") != plan_id:
+        raise PlanTamperedError("Staged planId mismatch.")
+    manifest_files = manifest.get("files", {})
+    for logical_name, entry in manifest_files.items():
+        path = staging_dir / logical_name
+        if not path.is_file():
+            raise PlanTamperedError(f"Staged file missing: {logical_name}")
+        if sha256_file(path) != entry.get("sha256"):
+            raise PlanTamperedError(f"Staged hash mismatch: {logical_name}")
+        if path.stat().st_size != entry.get("size"):
+            raise PlanTamperedError(f"Staged size mismatch: {logical_name}")
 
 
 def _load_subjects(snapshot_dir: Path) -> list[dict]:
     path = snapshot_dir / "canonical" / "subjects.json"
     if not path.exists():
         return []
-    data = read_json(path)
-    return data.get("subjects", [])
+    return read_json(path).get("subjects", [])
 
 
 def _load_results(snapshot_dir: Path) -> dict:
     path = snapshot_dir / "canonical" / "results.json"
-    if not path.exists():
-        return {}
-    return read_json(path)
+    return read_json(path) if path.exists() else {}
 
 
 def _load_outcomes(snapshot_dir: Path) -> dict:
     path = snapshot_dir / "canonical" / "outcomes.json"
-    if not path.exists():
-        return {}
-    return read_json(path)
+    return read_json(path) if path.exists() else {}
 
 
 def _load_assessments(snapshot_dir: Path) -> list[dict]:
     path = snapshot_dir / "canonical" / "assessments.json"
     if not path.exists():
         return []
-    data = read_json(path)
-    return data.get("assessments", [])
+    return read_json(path).get("assessments", [])
 
 
 def _build_recipients(
@@ -301,37 +354,37 @@ def _build_recipients(
     identity_store,
 ) -> list[PlanRecipient]:
     assessment_map = {a.get("assessmentId"): a for a in assessments_data}
-    results_by_student = {}
-    for r in results_data.get("results", []):
-        sid = r.get("studentId")
-        if sid:
-            results_by_student.setdefault(sid, []).append(r)
+    results_by_student: dict[str, list[dict]] = {}
+    for result in results_data.get("results", []):
+        student_id = result.get("studentId")
+        if student_id:
+            results_by_student.setdefault(student_id, []).append(result)
 
-    outcomes_by_student = {}
-    for o in outcomes_data.get("outcomes", []):
-        sid = o.get("subjectId")
-        if sid:
-            outcomes_by_student[sid] = o
+    outcomes_by_student = {
+        outcome.get("subjectId"): outcome
+        for outcome in outcomes_data.get("outcomes", [])
+        if outcome.get("subjectId")
+    }
 
     seen_emails: dict[str, str] = {}
     recipients: list[PlanRecipient] = []
-
-    for subject in sorted(subjects_data, key=lambda s: s.get("studentId", "")):
+    for subject in sorted(subjects_data, key=lambda item: item.get("studentId", "")):
         student_id = subject.get("studentId")
         if not student_id:
             continue
 
         identity = identity_store.resolve(student_id)
         if identity is None:
-            raise MissingIdentityError(f"studentId {student_id} not found in IdentityStore.")
-
+            raise MissingIdentityError(
+                f"studentId {student_id} not found in IdentityStore."
+            )
         email_raw = (identity.contact or {}).get("email")
         if not email_raw:
-            raise MissingEmailError(f"studentId {student_id} has no email in IdentityStore.")
+            raise MissingEmailError(
+                f"studentId {student_id} has no email in IdentityStore."
+            )
 
         normalized = normalize_email(email_raw)
-        masked = mask_email(normalized)
-
         if normalized in seen_emails:
             raise DuplicateEmailError(
                 f"studentId {student_id} and {seen_emails[normalized]} resolve to same email."
@@ -342,7 +395,6 @@ def _build_recipients(
         identity_projection_hash = compute_identity_projection_hash(
             student_id, display_name, normalized
         )
-
         view = _build_student_email_view(
             student_id=student_id,
             section_id=section_id,
@@ -352,48 +404,44 @@ def _build_recipients(
             student_outcome=outcomes_by_student.get(student_id),
             assessment_map=assessment_map,
         )
+        rendered_subject, rendered_body = render(
+            template,
+            {
+                "displayName": display_name,
+                "sectionId": section_id,
+                "publicationId": publication_id,
+                "resultsBlock": build_results_block(view),
+            },
+        )
 
-        results_block = build_results_block(view)
-        values = {
-            "displayName": display_name,
-            "sectionId": section_id,
-            "publicationId": publication_id,
-            "resultsBlock": results_block,
-        }
-
-        rendered_subject, rendered_body = render(template, values)
-
-        recipient_dict = {
+        recipient_core = {
             "studentId": student_id,
             "normalizedRecipient": normalized,
-            "maskedRecipient": masked,
+            "maskedRecipient": mask_email(normalized),
             "identityProjectionHash": identity_projection_hash,
             "subject": rendered_subject,
             "textBody": rendered_body,
         }
-
-        item_hash = compute_item_hash(recipient_dict)
-        idempotency_key = compute_idempotency_key(
-            section_id=section_id,
-            publication_id=publication_id,
-            student_id=student_id,
-            normalized_recipient=normalized,
-            template_id=template.template_id,
-            template_version=template.template_version,
-            intent=template.intent,
+        recipients.append(
+            PlanRecipient(
+                student_id=student_id,
+                normalized_recipient=normalized,
+                masked_recipient=recipient_core["maskedRecipient"],
+                identity_projection_hash=identity_projection_hash,
+                subject=rendered_subject,
+                text_body=rendered_body,
+                item_hash=compute_item_hash(recipient_core),
+                idempotency_key=compute_idempotency_key(
+                    section_id=section_id,
+                    publication_id=publication_id,
+                    student_id=student_id,
+                    normalized_recipient=normalized,
+                    template_id=template.template_id,
+                    template_version=template.template_version,
+                    intent=template.intent,
+                ),
+            )
         )
-
-        recipients.append(PlanRecipient(
-            student_id=student_id,
-            normalized_recipient=normalized,
-            masked_recipient=masked,
-            identity_projection_hash=identity_projection_hash,
-            subject=rendered_subject,
-            text_body=rendered_body,
-            item_hash=item_hash,
-            idempotency_key=idempotency_key,
-        ))
-
     return recipients
 
 
@@ -406,31 +454,34 @@ def _build_student_email_view(
     student_outcome: Optional[dict],
     assessment_map: dict,
 ) -> dict:
-    assessments = []
+    assessments: list[dict] = []
     if snapshot_mode == "grade-policy-effective" and student_outcome:
-        assessments.append({
-            "assessmentId": "final-outcome",
-            "assessmentLabel": "Resultado Final",
-            "status": student_outcome.get("status"),
-            "value": student_outcome.get("value"),
-            "unit": student_outcome.get("unit"),
-            "resultState": student_outcome.get("resultState"),
-            "finalizable": student_outcome.get("finalizable"),
-        })
-
-    for r in sorted(student_results, key=lambda x: x.get("assessmentId", "")):
-        aid = r.get("assessmentId", "")
-        a_meta = assessment_map.get(aid, {})
-        entry = {
-            "assessmentId": aid,
-            "assessmentLabel": a_meta.get("label", aid),
-            "status": r.get("status"),
-            "score": r.get("score"),
-            "scoreUnit": a_meta.get("unit", ""),
-            "grade": r.get("grade"),
-        }
-        assessments.append(entry)
-
+        assessments.append(
+            {
+                "assessmentId": "final-outcome",
+                "assessmentLabel": "Resultado Final",
+                "status": student_outcome.get("status"),
+                "value": student_outcome.get("value"),
+                "unit": student_outcome.get("unit"),
+                "resultState": student_outcome.get("resultState"),
+                "finalizable": student_outcome.get("finalizable"),
+            }
+        )
+    for result in sorted(
+        student_results, key=lambda item: item.get("assessmentId", "")
+    ):
+        assessment_id = result.get("assessmentId", "")
+        metadata = assessment_map.get(assessment_id, {})
+        assessments.append(
+            {
+                "assessmentId": assessment_id,
+                "assessmentLabel": metadata.get("label", assessment_id),
+                "status": result.get("status"),
+                "score": result.get("score"),
+                "scoreUnit": metadata.get("unit", ""),
+                "grade": result.get("grade"),
+            }
+        )
     return {
         "schemaVersion": "1.0.0",
         "studentId": student_id,
@@ -469,24 +520,25 @@ def _build_plan_core(
         "fromAddress": from_address,
         "replyTo": reply_to,
         "recipientCount": len(recipients),
-        "recipients": [r.to_dict() for r in recipients],
+        "recipients": [recipient.to_dict() for recipient in recipients],
     }
 
 
-def verify_plan_bundle(plan_dir: Path) -> 'VerifiedEmailPlan':
-    """Verify plan bundle integrity.
+def verify_plan_bundle(plan_dir: Path) -> VerifiedEmailPlan:
+    """Fail-closed verification of the complete private plan bundle."""
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise SchemaValidationError(
+            "jsonschema runtime dependency is required for plan verification."
+        ) from exc
 
-    Returns VerifiedEmailPlan on success.
-    Raises PlanTamperedError on any mismatch.
-    """
-    from .errors import PlanTamperedError, SchemaValidationError
-    from .models import VerifiedEmailPlan
     from .schemas import PLAN_SCHEMA_V1
 
+    plan_dir = Path(plan_dir)
     plan_path = plan_dir / "plan.json"
     manifest_path = plan_dir / "manifest.json"
     previews_dir = plan_dir / "previews"
-
     if not plan_path.exists():
         raise PlanTamperedError("plan.json missing from bundle")
     if not manifest_path.exists():
@@ -494,143 +546,94 @@ def verify_plan_bundle(plan_dir: Path) -> 'VerifiedEmailPlan':
 
     plan_dict = read_json(plan_path)
     manifest = read_json(manifest_path)
-
     try:
-        import jsonschema
         jsonschema.validate(plan_dict, PLAN_SCHEMA_V1)
-    except ImportError:
-        pass
+        jsonschema.validate(manifest, MANIFEST_SCHEMA_V1)
     except jsonschema.ValidationError as exc:
-        raise SchemaValidationError(f"Plan JSON Schema validation failed: {exc.message}") from exc
+        raise SchemaValidationError(
+            f"Email bundle schema validation failed: {exc.message}"
+        ) from exc
 
-    MANIFEST_SCHEMA = {
-        "type": "object",
-        "required": ["schemaVersion", "planId", "files"],
-        "additionalProperties": False,
-        "properties": {
-            "schemaVersion": {"type": "string"},
-            "planId": {"type": "string"},
-            "files": {
-                "type": "object",
-                "additionalProperties": False,
-                "patternProperties": {
-                    "^.*$": {
-                        "type": "object",
-                        "required": ["sha256", "size"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                            "size": {"type": "integer", "minimum": 0},
-                        },
-                    },
-                },
-            },
-        },
-    }
-    try:
-        import jsonschema
-        jsonschema.validate(manifest, MANIFEST_SCHEMA)
-    except ImportError:
-        pass
-    except jsonschema.ValidationError as exc:
-        raise SchemaValidationError(f"Manifest JSON Schema validation failed: {exc.message}") from exc
+    plan_id = plan_dict["planId"]
+    preview_hash = plan_dict["previewHash"]
+    recipients = plan_dict["recipients"]
+    recipient_count = plan_dict["recipientCount"]
 
-    plan_id = plan_dict.get("planId", "")
-    preview_hash = plan_dict.get("previewHash", "")
-    recipient_count = plan_dict.get("recipientCount", 0)
-    recipients = plan_dict.get("recipients", [])
+    if manifest["planId"] != plan_id:
+        raise PlanTamperedError("Manifest planId does not match plan.json.")
+    if plan_dir.name != plan_id:
+        raise PlanTamperedError("Plan directory basename does not match planId.")
 
-    manifest_plan_id = manifest.get("planId", "")
-    if manifest_plan_id != plan_id:
-        raise PlanTamperedError(f"manifest planId {manifest_plan_id} does not match plan planId {plan_id}")
-
-    expected_dirname = plan_dir.name
-    if expected_dirname != plan_id:
-        raise PlanTamperedError(f"directory basename {expected_dirname} does not match planId {plan_id}")
-
-    manifest_files = manifest.get("files", {})
-
+    manifest_files = manifest["files"]
+    if "plan.json" not in manifest_files:
+        raise PlanTamperedError("Manifest does not declare plan.json.")
     for logical_name, entry in manifest_files.items():
         file_path = plan_dir / logical_name
-        if not file_path.exists():
+        try:
+            file_path.relative_to(plan_dir)
+        except ValueError as exc:
+            raise PlanTamperedError("Manifest path escapes plan directory.") from exc
+        if not file_path.is_file():
             raise PlanTamperedError(f"Manifest file missing: {logical_name}")
-        actual_sha256 = sha256_file(file_path)
-        expected_sha256 = entry.get("sha256", "")
-        if actual_sha256 != expected_sha256:
+        if sha256_file(file_path) != entry["sha256"]:
             raise PlanTamperedError(f"SHA256 mismatch for {logical_name}")
-        actual_size = file_path.stat().st_size
-        expected_size = entry.get("size")
-        if expected_size is not None and actual_size != expected_size:
+        if file_path.stat().st_size != entry["size"]:
             raise PlanTamperedError(f"Size mismatch for {logical_name}")
 
-    for recipient in recipients:
-        student_id = recipient.get("studentId", "")
-        stored_item_hash = recipient.get("itemHash", "")
-        recipient_check = {k: v for k, v in recipient.items() if k not in ("itemHash", "idempotencyKey")}
-        recomputed_item_hash = compute_item_hash(recipient_check)
-        if recomputed_item_hash != stored_item_hash:
-            raise PlanTamperedError(f"itemHash mismatch for {student_id}")
+    student_ids = [recipient["studentId"] for recipient in recipients]
+    if student_ids != sorted(student_ids):
+        raise PlanTamperedError("Recipients are not sorted by studentId.")
+    if len(student_ids) != len(set(student_ids)):
+        raise PlanTamperedError("Duplicate studentId in plan.")
+    if len(recipients) != recipient_count:
+        raise PlanTamperedError("recipientCount mismatch.")
 
-        stored_idempotency_key = recipient.get("idempotencyKey", "")
-        normalized_recipient = recipient.get("normalizedRecipient", "")
-        recomputed_key = compute_idempotency_key(
-            section_id=plan_dict.get("sectionId", ""),
-            publication_id=plan_dict.get("publicationId", ""),
+    for recipient in recipients:
+        student_id = recipient["studentId"]
+        recipient_core = {
+            key: value
+            for key, value in recipient.items()
+            if key not in ("itemHash", "idempotencyKey")
+        }
+        if compute_item_hash(recipient_core) != recipient["itemHash"]:
+            raise PlanTamperedError(f"itemHash mismatch for {student_id}")
+        expected_key = compute_idempotency_key(
+            section_id=plan_dict["sectionId"],
+            publication_id=plan_dict["publicationId"],
             student_id=student_id,
-            normalized_recipient=normalized_recipient,
-            template_id=plan_dict.get("templateId", ""),
-            template_version=plan_dict.get("templateVersion", ""),
-            intent=plan_dict.get("intent", ""),
+            normalized_recipient=recipient["normalizedRecipient"],
+            template_id=plan_dict["templateId"],
+            template_version=plan_dict["templateVersion"],
+            intent=plan_dict["intent"],
         )
-        if recomputed_key != stored_idempotency_key:
+        if expected_key != recipient["idempotencyKey"]:
             raise PlanTamperedError(f"idempotencyKey mismatch for {student_id}")
 
-    plan_core = {k: v for k, v in plan_dict.items() if k not in ("previewHash", "planId")}
-    recomputed_preview_hash = compute_preview_hash(plan_core)
-    if recomputed_preview_hash != preview_hash:
-        raise PlanTamperedError("previewHash mismatch")
-
-    recomputed_plan_id = derive_plan_id(recomputed_preview_hash)
-    if recomputed_plan_id != plan_id:
-        raise PlanTamperedError("planId mismatch")
-
-    if len(recipients) != recipient_count:
-        raise PlanTamperedError("recipientCount mismatch")
-
-    student_ids = [r.get("studentId", "") for r in recipients]
-    if student_ids != sorted(student_ids):
-        raise PlanTamperedError("recipients not sorted by studentId")
-
-    seen_student_ids = set()
-    for recipient in recipients:
-        sid = recipient.get("studentId", "")
-        if sid in seen_student_ids:
-            raise PlanTamperedError(f"Duplicate studentId {sid}")
-        seen_student_ids.add(sid)
-
-    for recipient in recipients:
-        student_id = recipient.get("studentId", "")
         preview_file = previews_dir / f"{student_id}.txt"
-        if not preview_file.exists():
+        if not preview_file.is_file():
             raise PlanTamperedError(f"Preview missing for {student_id}")
-        expected_body = recipient.get("textBody", "")
-        actual_body = preview_file.read_text(encoding="utf-8")
-        if actual_body != expected_body:
+        if preview_file.read_text(encoding="utf-8") != recipient["textBody"]:
             raise PlanTamperedError(f"Preview content mismatch for {student_id}")
 
-    all_files = set()
-    for f in plan_dir.rglob("*"):
-        if f.is_file():
-            rel = str(f.relative_to(plan_dir))
-            all_files.add(rel)
-    expected_files = set(manifest_files.keys()) | {"manifest.json"}
-    if all_files != expected_files:
-        extra = all_files - expected_files
-        if extra:
-            raise PlanTamperedError(f"Unexpected files in bundle: {extra}")
-        missing = expected_files - all_files
-        if missing:
-            raise PlanTamperedError(f"Missing files in bundle: {missing}")
+    plan_core = {
+        key: value
+        for key, value in plan_dict.items()
+        if key not in ("previewHash", "planId")
+    }
+    recomputed_preview_hash = compute_preview_hash(plan_core)
+    if recomputed_preview_hash != preview_hash:
+        raise PlanTamperedError("previewHash mismatch.")
+    if derive_plan_id(recomputed_preview_hash) != plan_id:
+        raise PlanTamperedError("planId mismatch.")
+
+    actual_files = {
+        path.relative_to(plan_dir).as_posix()
+        for path in plan_dir.rglob("*")
+        if path.is_file()
+    }
+    expected_files = set(manifest_files) | {"manifest.json"}
+    if actual_files != expected_files:
+        raise PlanTamperedError("Plan bundle contains missing or unexpected files.")
 
     return VerifiedEmailPlan(
         plan_id=plan_id,
