@@ -46,7 +46,10 @@ def _make_real_snapshot(base: Path):
         "SOURCE_DATE_EPOCH": "1700000000",
     }
 
-    _write(legacy / "manifest.json", {"course": {"id": SECTION}, "schemaVersion": 1})
+    _write(
+        legacy / "manifest.json",
+        {"course": {"id": SECTION}, "schemaVersion": 1},
+    )
     _write(
         legacy / "course/course.json",
         {
@@ -59,18 +62,43 @@ def _make_real_snapshot(base: Path):
                     "maxGrade": 7,
                     "passingPercent": 60,
                 },
-                "presentationWeight": 100,
-                "examWeight": 0,
+                "presentationWeight": 60,
+                "examWeight": 40,
             },
         },
     )
     _write(
         legacy / "course/students.json",
-        {"items": [{"id": "11111111-1", "rut": "11111111-1", "name": "Synthetic Student"}]},
+        {
+            "items": [
+                {
+                    "id": "11111111-1",
+                    "rut": "11111111-1",
+                    "name": "Synthetic Student",
+                }
+            ]
+        },
     )
     _write(
         legacy / "course/evaluations.json",
-        {"items": [{"id": "ev1", "title": "EV1", "weight": 100, "type": "evaluacion", "forms": ["A"]}]},
+        {
+            "items": [
+                {
+                    "id": "ev1",
+                    "title": "EV1 - Presentation",
+                    "weight": 60,
+                    "type": "evaluacion",
+                    "forms": ["A"],
+                },
+                {
+                    "id": "ev2",
+                    "title": "EV2 - Exam",
+                    "weight": 40,
+                    "type": "examen",
+                    "forms": ["A"],
+                },
+            ]
+        },
     )
     _write(
         legacy / "course/results.json",
@@ -83,14 +111,28 @@ def _make_real_snapshot(base: Path):
                     "status": "Evaluada",
                     "score": 80.0,
                     "grade": 6.0,
-                    "resultPath": "synthetic",
+                    "resultPath": "x",
                     "finalFeedback": "Synthetic feedback",
                     "ies": [],
-                }
+                },
+                {
+                    "studentId": "11111111-1",
+                    "evaluationId": "ev2",
+                    "form": "A",
+                    "status": "Evaluada",
+                    "score": 70.0,
+                    "grade": 5.0,
+                    "resultPath": "x",
+                    "finalFeedback": "Synthetic feedback",
+                    "ies": [],
+                },
             ]
         },
     )
-    _write(legacy / "course/course-summary.json", {"students": 1, "evaluations": 1})
+    _write(
+        legacy / "course/course-summary.json",
+        {"students": 1, "evaluations": 2},
+    )
 
     identity_store = IdentityStore(roots / "state" / "identity")
     identity_store.ensure_many(
@@ -172,7 +214,15 @@ def _make_real_snapshot(base: Path):
         lifecycle_ledger=context.ledger(),
         ledger=ledger,
     )
-    plan_dir = roots / "private" / "email" / "plans" / SECTION / PUBLICATION / plan.plan_id
+    plan_dir = (
+        roots
+        / "private"
+        / "email"
+        / "plans"
+        / SECTION
+        / PUBLICATION
+        / plan.plan_id
+    )
     ledger.register_plan(
         plan_id=plan.plan_id,
         section_id=plan.section_id,
@@ -279,7 +329,9 @@ def test_snapshot_tamper_after_approval_blocks_execute(real_c3_fixture):
             preview_hash=plan.preview_hash,
             ledger=ledger,
             transport=transport,
-            transport_config=TransportConfig(host="localhost", port=0, username=""),
+            transport_config=TransportConfig(
+                host="localhost", port=0, username=""
+            ),
             plan_dir=plan_dir,
             identity_store=identity_store,
             lifecycle_ledger=context.ledger(),
@@ -309,14 +361,20 @@ def test_recovery_marker_does_not_mutate_approved_plan(real_c3_fixture):
     )
     recovery_root = roots / "state" / "email" / "recovery"
 
-    with patch.object(ledger, "complete_batch_run", side_effect=LedgerError("synthetic")):
+    with patch.object(
+        ledger,
+        "complete_batch_run",
+        side_effect=LedgerError("synthetic"),
+    ):
         with pytest.raises(LedgerError):
             execute_plan(
                 plan_id=plan.plan_id,
                 preview_hash=plan.preview_hash,
                 ledger=ledger,
                 transport=FakeTransport(),
-                transport_config=TransportConfig(host="localhost", port=0, username=""),
+                transport_config=TransportConfig(
+                    host="localhost", port=0, username=""
+                ),
                 plan_dir=plan_dir,
                 identity_store=identity_store,
                 lifecycle_ledger=context.ledger(),
