@@ -146,10 +146,7 @@ def cmd_approve(args):
     identity_store = _get_identity_store(roots)
     plan_dir = roots.private_root / "email" / "plans" / args.section / args.publication / args.plan
 
-    try:
-        lifecycle_ledger = _get_lifecycle_ledger(roots, args.section)
-    except Exception:
-        lifecycle_ledger = None
+    lifecycle_ledger = _get_lifecycle_ledger(roots, args.section)
 
     try:
         record = approve_plan(
@@ -177,27 +174,27 @@ def cmd_execute(args):
     from email_delivery.executor import execute_plan
     from email_delivery.transport.fake import FakeTransport, FakeBehavior
     from email_delivery.transport.smtp import SMTPTransport
-    from email_delivery.models import TransportConfig
+    from email_delivery.models import TransportConfig, TlsMode
 
     roots = _resolve_roots()
     ledger = _get_ledger(roots)
     identity_store = _get_identity_store(roots)
     plan_dir = roots.private_root / "email" / "plans" / args.section / args.publication / args.plan
 
-    try:
-        lifecycle_ledger = _get_lifecycle_ledger(roots, args.section)
-    except Exception:
-        lifecycle_ledger = None
+    lifecycle_ledger = _get_lifecycle_ledger(roots, args.section)
 
     if args.transport == "fake":
         transport = FakeTransport()
         config = TransportConfig(host="localhost", port=0, username="")
     else:
         transport = SMTPTransport()
+        password = os.environ.get("ACADGRAD_SMTP_PASSWORD", "")
         config = TransportConfig(
             host=os.environ.get("ACADGRAD_SMTP_HOST", "localhost"),
             port=int(os.environ.get("ACADGRAD_SMTP_PORT", "587")),
             username=os.environ.get("ACADGRAD_SMTP_USERNAME", ""),
+            password=password,
+            tls_mode=TlsMode(os.environ.get("ACADGRAD_SMTP_TLS_MODE", "starttls")) if os.environ.get("ACADGRAD_SMTP_TLS_MODE") in ("starttls", "implicitTls") else TlsMode.STARTTLS,
         )
 
     try:

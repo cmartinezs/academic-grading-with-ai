@@ -68,7 +68,6 @@ CREATE TABLE deliveries (
     planId              TEXT NOT NULL REFERENCES plans(planId),
     studentId           TEXT NOT NULL,
     idempotencyKey      TEXT NOT NULL UNIQUE,
-    normalizedRecipient TEXT NOT NULL,
     maskedRecipient     TEXT NOT NULL,
     identityProjectionHash TEXT NOT NULL,
     state               TEXT NOT NULL DEFAULT 'reserved',
@@ -80,6 +79,8 @@ CREATE TABLE deliveries (
     updatedAt           TEXT NOT NULL
 );
 ```
+
+> **Note**: The `deliveries` table stores only `maskedRecipient`, not `normalizedRecipient`. The full normalized email is stored exclusively in the plan.json under `private_root` and is resolved at execution time via `IdentityStore.resolve()`.
 
 ### delivery_attempts
 
@@ -227,7 +228,7 @@ CREATE TABLE batch_runs (
 
 - Email body
 - Complete subject line
-- Complete recipient email
+- Complete recipient email (normalizedRecipient)
 - displayName
 - Feedback text
 - SMTP password

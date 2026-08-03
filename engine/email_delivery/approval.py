@@ -46,6 +46,12 @@ def approve_plan(
     if "@" in actor:
         raise ApprovalMismatchError("actor must be a non-email audit id.")
 
+    from .plan import verify_plan_bundle
+    try:
+        verify_plan_bundle(plan_dir)
+    except PlanTamperedError as exc:
+        raise PlanTamperedError(f"Plan bundle verification failed: {exc}") from exc
+
     plan_path = plan_dir / "plan.json"
     if not plan_path.exists():
         raise NotApprovedError(f"Plan not found: {plan_dir}")
@@ -64,12 +70,14 @@ def approve_plan(
             f"recipientCount mismatch: plan has {plan_recipient_count}, provided {recipient_count}"
         )
 
-    if lifecycle_ledger is not None and publication_id is not None:
-        state = lifecycle_ledger.current_state(publication_id)
-        if state in SNAPSHOT_TERMINAL_STATES:
-            raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
-        if state != "approved":
-            raise SnapshotTerminalError(f"Snapshot state is {state}, expected approved.")
+    if lifecycle_ledger is None or publication_id is None:
+        raise ApprovalError("lifecycle_ledger and publication_id are required for approval.")
+
+    state = lifecycle_ledger.current_state(publication_id)
+    if state in SNAPSHOT_TERMINAL_STATES:
+        raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
+    if state != "approved":
+        raise SnapshotTerminalError(f"Snapshot state is {state}, expected approved.")
 
     if identity_store is not None:
         _check_identity_drift(plan_dict, identity_store)

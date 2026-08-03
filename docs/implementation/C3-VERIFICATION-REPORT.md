@@ -67,13 +67,17 @@
 ## Tests
 
 Command: `PYTHONPATH=engine pytest engine/email_delivery/tests/ -v`
-Result: **96 passed** in ~1.6s
+Result: **170 passed** in ~5.6s
 
 ## Concurrency
 
 - Concurrent reserve of same idempotency key: one succeeds, one gets IdempotencyConflictError.
 - Concurrent reserve of different keys: both succeed.
 - SQLite WAL mode allows concurrent reads during writes.
+- Multiprocess execute of same plan with same key: send count exactly 1 (at-most-once delivery).
+- Two plans with same semantic key: send count ≤ 1.
+- retryAuthorized concurrent: one send only.
+- Provider accepted + crash before persisting sent: ambiguous.
 
 ## Failure Injection
 
@@ -87,10 +91,48 @@ Result: **96 passed** in ~1.6s
 ## Privacy
 
 - Logs: no full email, no body, no feedback, no displayName.
-- Ledger: stores maskedRecipient, never full email.
-- Previews: stored only in private_root.
-- SMTP password: only from environment variable.
+- Ledger: stores maskedRecipient, never full email or normalizedRecipient.
+- Plan (private_root): stores both normalizedRecipient and maskedRecipient.
+- Executor: uses normalizedRecipient exclusively for Envelope and SMTP To header.
+- Previews: stored only in private_root with 0700 permissions.
+- SMTP password: only from environment variable or TransportConfig; repr=False; never serialized.
 - C0 scanner: passes on all C3 code and fixtures.
+
+## Batch Outcomes
+
+| Outcome | Condition | Verified |
+|---|---|---|
+| COMPLETE | All recipients sent | Yes |
+| PARTIAL | Some sent, some failed/blocked | Yes |
+| PAUSED | Transient failure with no sends | Yes |
+| AMBIGUOUS | Unknown delivery certainty | Yes |
+| BLOCKED | No sends, all blocked/failed | Yes |
+
+## Plan Bundle Verification
+
+- `verify_plan_bundle` is the single authority for plan reading.
+- Used in: prepare (existing plan), approve (before recording), execute (before sending).
+- Verifies: manifest SHA-256/size, itemHash, idempotencyKey with normalizedRecipient, previewHash, planId, recipientCount, recipients sorted/unique, previews exact, no extra/missing files, directory basename == planId.
+- Tamper tests: subject, body, normalizedRecipient, idempotencyKey, manifest, preview, planId directory mismatch — all rejected.
+
+## Snapshot Verification
+
+- `lifecycle_ledger` and `publication_id` are required for approve and execute.
+- Missing → operation blocked (no silent fallback).
+- Snapshot must be in `approved` state and not terminal.
+
+## Template Registry
+
+- `register_template_version` called before approval.
+- Same templateId + templateVersion + same hash → OK.
+- Same templateId + templateVersion + different hash → TemplateHashMismatchError, blocked.
+
+## Atomic Plan Hardening
+
+- staging_id unique per operation (planId + uuid fragment).
+- 0700 on all private directories including parents and previews.
+- verify_plan_bundle(existing) for existing plan before idempotent return.
+- Byte-equivalent idempotent return only when full bundle is valid.
 
 ## Compatibility
 

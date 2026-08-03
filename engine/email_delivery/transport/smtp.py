@@ -1,7 +1,8 @@
 """SMTP transport for C3 email delivery.
 
 Uses smtplib standard library. TLS required. One recipient per message.
-Password only from environment variable ACADGRAD_SMTP_PASSWORD.
+Password from TransportConfig or environment variable ACADGRAD_SMTP_PASSWORD.
+TransportConfig is the single authority; no re-reading from env during send.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ class SMTPTransport(EmailTransport):
                 code="smtp-auth-missing",
             )
 
-    def send(self, message: EmailMessage, envelope: Envelope) -> TransportReceipt:
+    def send(self, message: EmailMessage, envelope: Envelope, config: Optional[TransportConfig] = None) -> TransportReceipt:
         client_message_id = message.get("Message-ID", f"<{uuid.uuid4()}@localhost>")
 
         try:
@@ -73,12 +74,20 @@ class SMTPTransport(EmailTransport):
             if envelope.to_address and ('\r' in envelope.to_address or '\n' in envelope.to_address):
                 raise CRLFInjectionError("CRLF in to address")
 
-            password = os.environ.get(SMTP_PASSWORD_ENV, "")
-            host = os.environ.get("ACADGRAD_SMTP_HOST", "localhost")
-            port = int(os.environ.get("ACADGRAD_SMTP_PORT", "587"))
-            username = os.environ.get("ACADGRAD_SMTP_USERNAME", "")
-            tls_mode_str = os.environ.get("ACADGRAD_SMTP_TLS_MODE", "starttls")
-            tls_mode = TlsMode(tls_mode_str) if tls_mode_str in ("starttls", "implicitTls") else TlsMode.STARTTLS
+            if config is None:
+                config = TransportConfig(
+                    host=os.environ.get("ACADGRAD_SMTP_HOST", "localhost"),
+                    port=int(os.environ.get("ACADGRAD_SMTP_PORT", "587")),
+                    username=os.environ.get("ACADGRAD_SMTP_USERNAME", ""),
+                    password=os.environ.get(SMTP_PASSWORD_ENV, ""),
+                    tls_mode=TlsMode(os.environ.get("ACADGRAD_SMTP_TLS_MODE", "starttls")) if os.environ.get("ACADGRAD_SMTP_TLS_MODE") in ("starttls", "implicitTls") else TlsMode.STARTTLS,
+                )
+
+            host = config.host
+            port = config.port
+            username = config.username
+            password = config.password or os.environ.get(SMTP_PASSWORD_ENV, "")
+            tls_mode = config.tls_mode
 
             if tls_mode == TlsMode.IMPLICIT_TLS:
                 ctx = ssl.create_default_context()

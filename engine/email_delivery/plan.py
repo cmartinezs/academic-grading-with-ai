@@ -30,6 +30,7 @@ from .errors import (
     MissingEmailError,
     MissingIdentityError,
     PlanExistsError,
+    PlanTamperedError,
     SnapshotNotApprovedError,
     SnapshotTerminalError,
 )
@@ -143,16 +144,19 @@ def prepare_plan(
     plan_dir = private_root / "email" / "plans" / section_id / publication_id / plan_id
     existing_plan_path = plan_dir / "plan.json"
     if existing_plan_path.exists():
+        try:
+            verify_plan_bundle(plan_dir)
+        except PlanTamperedError:
+            raise PlanExistsError(f"Existing plan at {plan_dir} fails bundle verification")
         existing = read_json(existing_plan_path)
         existing_json = json.dumps(existing, sort_keys=True)
         new_json = json.dumps(plan.to_dict(), sort_keys=True)
         if existing_json == new_json:
-            existing_manifest = plan_dir / "manifest.json"
-            if existing_manifest.exists():
-                return plan
+            return plan
         raise PlanExistsError(f"A different plan already exists at {plan_dir}")
 
-    staging_id = operation_id or plan_id
+    import uuid as _uuid
+    staging_id = operation_id or f"{plan_id}-{_uuid.uuid4().hex[:12]}"
     staging_base = private_root / "email" / "plans" / section_id / publication_id / ".staging"
     staging_dir = staging_base / staging_id
     if staging_dir.exists():
@@ -163,12 +167,21 @@ def prepare_plan(
         staging_dir.chmod(0o700)
     except OSError:
         pass
+    for parent in [staging_dir, staging_base, staging_base.parent, staging_base.parent.parent]:
+        try:
+            parent.chmod(0o700)
+        except OSError:
+            pass
 
     plan_json_path = staging_dir / "plan.json"
     write_json(plan_json_path, plan.to_dict())
 
     previews_dir = staging_dir / "previews"
     previews_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        previews_dir.chmod(0o700)
+    except OSError:
+        pass
     manifest_files = {"plan.json": {"sha256": sha256_file(plan_json_path), "size": plan_json_path.stat().st_size}}
     for recipient in recipients:
         preview_path = previews_dir / f"{recipient.student_id}.txt"
@@ -315,6 +328,7 @@ def _build_recipients(
 
         recipient_dict = {
             "studentId": student_id,
+            "normalizedRecipient": normalized,
             "maskedRecipient": masked,
             "identityProjectionHash": identity_projection_hash,
             "subject": rendered_subject,
@@ -334,6 +348,7 @@ def _build_recipients(
 
         recipients.append(PlanRecipient(
             student_id=student_id,
+            normalized_recipient=normalized,
             masked_recipient=masked,
             identity_projection_hash=identity_projection_hash,
             subject=rendered_subject,
@@ -446,6 +461,14 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
     recipient_count = plan_dict.get("recipientCount", 0)
     recipients = plan_dict.get("recipients", [])
 
+    manifest_plan_id = manifest.get("planId", "")
+    if manifest_plan_id != plan_id:
+        raise PlanTamperedError(f"manifest planId {manifest_plan_id} does not match plan planId {plan_id}")
+
+    expected_dirname = plan_dir.name
+    if expected_dirname != plan_id:
+        raise PlanTamperedError(f"directory basename {expected_dirname} does not match planId {plan_id}")
+
     manifest_files = manifest.get("files", {})
 
     for logical_name, entry in manifest_files.items():
@@ -470,15 +493,18 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
             raise PlanTamperedError(f"itemHash mismatch for {student_id}")
 
         stored_idempotency_key = recipient.get("idempotencyKey", "")
+        normalized_recipient = recipient.get("normalizedRecipient", "")
         recomputed_key = compute_idempotency_key(
             section_id=plan_dict.get("sectionId", ""),
             publication_id=plan_dict.get("publicationId", ""),
             student_id=student_id,
-            normalized_recipient=recipient.get("maskedRecipient", ""),
+            normalized_recipient=normalized_recipient,
             template_id=plan_dict.get("templateId", ""),
             template_version=plan_dict.get("templateVersion", ""),
             intent=plan_dict.get("intent", ""),
         )
+        if recomputed_key != stored_idempotency_key:
+            raise PlanTamperedError(f"idempotencyKey mismatch for {student_id}")
 
     plan_core = {k: v for k, v in plan_dict.items() if k not in ("previewHash", "planId")}
     recomputed_preview_hash = compute_preview_hash(plan_core)
@@ -495,6 +521,13 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
     student_ids = [r.get("studentId", "") for r in recipients]
     if student_ids != sorted(student_ids):
         raise PlanTamperedError("recipients not sorted by studentId")
+
+    seen_student_ids = set()
+    for recipient in recipients:
+        sid = recipient.get("studentId", "")
+        if sid in seen_student_ids:
+            raise PlanTamperedError(f"Duplicate studentId {sid}")
+        seen_student_ids.add(sid)
 
     for recipient in recipients:
         student_id = recipient.get("studentId", "")
@@ -516,6 +549,9 @@ def verify_plan_bundle(plan_dir: Path) -> dict:
         extra = all_files - expected_files
         if extra:
             raise PlanTamperedError(f"Unexpected files in bundle: {extra}")
+        missing = expected_files - all_files
+        if missing:
+            raise PlanTamperedError(f"Missing files in bundle: {missing}")
 
     return {
         "plan_id": plan_id,

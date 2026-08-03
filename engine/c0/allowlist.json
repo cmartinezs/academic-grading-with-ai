@@ -53,6 +53,11 @@
       "reason": "TransportConfig.password is a typed field for passing credentials at runtime; never logged or committed."
     },
     {
+      "path": "engine/scripts/email_delivery.py",
+      "rules": ["secret-assignment"],
+      "reason": "C3 CLI reads SMTP password from environment variable and passes to TransportConfig in memory only; never logged or committed."
+    },
+    {
       "path": "engine/email_delivery/tests/**",
       "rules": ["chilean-rut", "email", "secret-assignment"],
       "reason": "C3 synthetic tests use fictional RUT/email-shaped identifiers and synthetic password config in fixtures; no real secrets."

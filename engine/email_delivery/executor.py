@@ -69,11 +69,15 @@ def execute_plan(
             check_snapshot_sendable(lifecycle_ledger, publication_id)
         except SnapshotTerminalError as exc:
             raise ExecuteBlockedError("Snapshot not sendable.") from exc
+    elif lifecycle_ledger is None or publication_id is None:
+        raise ExecuteBlockedError("lifecycle_ledger and publication_id are required for execution.")
 
-    if identity_store is not None:
-        drifts = check_identity_drift(plan_dict, identity_store)
-        if drifts:
-            raise IdentityDriftError(f"Identity drift detected: {'; '.join(drifts)}")
+    if identity_store is None:
+        raise ExecuteBlockedError("identity_store is required for execution.")
+
+    drifts = check_identity_drift(plan_dict, identity_store)
+    if drifts:
+        raise IdentityDriftError(f"Identity drift detected: {'; '.join(drifts)}")
 
     try:
         transport.preflight(transport_config)
@@ -91,6 +95,7 @@ def execute_plan(
     blocked_count = 0
     snapshot_terminal = False
     batch_transport_error = False
+    paused_count = 0
 
     transport_type = "fake" if isinstance(transport, FakeTransport) else "smtp"
     batch_run_id = ledger.start_batch_run(
@@ -105,10 +110,33 @@ def execute_plan(
         for recipient in recipients:
             student_id = recipient["studentId"]
             idempotency_key = recipient["idempotencyKey"]
+            normalized_recipient = recipient["normalizedRecipient"]
             masked_recipient = recipient["maskedRecipient"]
             identity_projection_hash = recipient["identityProjectionHash"]
             subject = recipient["subject"]
             text_body = recipient["textBody"]
+
+            identity = identity_store.resolve(student_id)
+            if identity is None:
+                blocked_count += 1
+                continue
+
+            email_raw = (identity.contact or {}).get("email")
+            if not email_raw:
+                blocked_count += 1
+                continue
+
+            current_normalized = normalize_email(email_raw)
+            if current_normalized != normalized_recipient:
+                blocked_count += 1
+                continue
+
+            current_hash = compute_identity_projection_hash(
+                student_id, identity.display_name or "", current_normalized
+            )
+            if current_hash != identity_projection_hash:
+                blocked_count += 1
+                continue
 
             if snapshot_terminal or batch_transport_error:
                 blocked_count += 1
@@ -133,9 +161,6 @@ def execute_plan(
             except LedgerError:
                 blocked_count += 1
                 continue
-            except Exception:
-                blocked_count += 1
-                continue
 
             if action == "sent":
                 skipped_count += 1
@@ -143,7 +168,11 @@ def execute_plan(
             if action == "ambiguous":
                 ambiguous_count += 1
                 continue
-            if action in ("failedPermanent", "sending", "paused", "failedTransient", "blocked"):
+            if action == "paused":
+                paused_count += 1
+                blocked_count += 1
+                continue
+            if action in ("failedPermanent", "sending", "failedTransient", "blocked"):
                 blocked_count += 1
                 continue
             if action not in ("reserved", "retryAuthorized"):
@@ -157,19 +186,19 @@ def execute_plan(
                     to_state=DeliveryState.SENDING,
                     client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                 )
-            except Exception:
+            except LedgerError:
                 blocked_count += 1
                 continue
 
             envelope = Envelope(
                 from_address=from_address,
-                to_address=masked_recipient,
+                to_address=normalized_recipient,
                 reply_to=reply_to,
             )
 
             msg = build_email_message(
                 from_address=from_address,
-                to_address=masked_recipient,
+                to_address=normalized_recipient,
                 subject=subject,
                 body=text_body,
                 reply_to=reply_to,
@@ -231,6 +260,7 @@ def execute_plan(
                         client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                     )
                     failed_count += 1
+                    paused_count += 1
             except BatchTransportError as exc:
                 if exc.retryability == "transient":
                     ledger.transition_delivery(
@@ -242,6 +272,7 @@ def execute_plan(
                         delivery_certainty=exc.delivery_certainty,
                         client_message_id=f"<{idempotency_key[:24]}@academic-grading>",
                     )
+                    paused_count += 1
                 else:
                     ledger.transition_delivery(
                         delivery_id=delivery_id,
@@ -258,11 +289,13 @@ def execute_plan(
                 blocked_count += 1
                 break
 
-    except Exception:
+    except LedgerError:
         blocked_count += 1
 
     if blocked_count > 0 and sent_count == 0 and ambiguous_count == 0 and failed_count == 0:
         outcome = ExecuteOutcome.BLOCKED
+    elif paused_count > 0 and sent_count == 0 and ambiguous_count == 0:
+        outcome = ExecuteOutcome.PAUSED
     elif snapshot_terminal and sent_count > 0:
         outcome = ExecuteOutcome.PARTIAL
     elif batch_transport_error:
@@ -272,8 +305,12 @@ def execute_plan(
             outcome = ExecuteOutcome.BLOCKED
     elif blocked_count > 0 and ambiguous_count > 0:
         outcome = ExecuteOutcome.AMBIGUOUS
-    elif ambiguous_count > 0:
+    elif ambiguous_count > 0 and sent_count > 0:
         outcome = ExecuteOutcome.AMBIGUOUS
+    elif ambiguous_count > 0 and sent_count == 0:
+        outcome = ExecuteOutcome.AMBIGUOUS
+    elif paused_count > 0 and sent_count > 0:
+        outcome = ExecuteOutcome.PARTIAL
     elif blocked_count > 0 and sent_count > 0:
         outcome = ExecuteOutcome.PARTIAL
     elif failed_count > 0 and sent_count > 0:

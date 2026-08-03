@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import smtplib
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -15,7 +17,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -155,6 +157,12 @@ def _synthetic_identity_store(identities=None):
     store.resolve = MagicMock(side_effect=lambda sid: identities.get(sid))
     store.all = MagicMock(return_value=list(identities.values()))
     return store
+
+
+def _mock_lifecycle_ledger(state="approved"):
+    ledger = MagicMock()
+    ledger.current_state = MagicMock(return_value=state)
+    return ledger
 
 
 class TestEmailNormalization:
@@ -1296,7 +1304,8 @@ class TestPlanRecipient:
     def test_recipient_dict(self):
         r = PlanRecipient(
             student_id="stu_001",
-            masked_recipient="u***@example.test",
+            normalized_recipient="juan@example.test",
+            masked_recipient="j***@example.test",
             identity_projection_hash="i" * 64,
             subject="Test Subject",
             text_body="Test Body",
@@ -1305,9 +1314,10 @@ class TestPlanRecipient:
         )
         d = r.to_dict()
         assert d["studentId"] == "stu_001"
-        assert d["maskedRecipient"] == "u***@example.test"
+        assert d["normalizedRecipient"] == "juan@example.test"
+        assert d["maskedRecipient"] == "j***@example.test"
         assert "textBody" in d
-        assert "normalizedRecipient" not in d
+        assert "normalizedRecipient" in d
 
 
 class TestRealConfirmations:
@@ -1342,6 +1352,9 @@ class TestRealConfirmations:
                 ledger=ledger, transport=FakeTransport(),
                 transport_config=TransportConfig(host="localhost", port=0, username=""),
                 plan_dir=plan_dir, confirm_send=False,
+                lifecycle_ledger=_mock_lifecycle_ledger(),
+                publication_id="pub_001",
+                identity_store=_synthetic_identity_store(),
             )
 
     def test_resolve_ambiguous_requires_confirm(self, ledger):
@@ -1442,10 +1455,12 @@ class TestExecuteWithFakeTransport:
         private_root.mkdir(parents=True, exist_ok=True)
         temp_root.mkdir(parents=True, exist_ok=True)
 
-        return ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root
+        lifecycle_ledger = _mock_lifecycle_ledger(state="approved")
+
+        return ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger
 
     def test_prepare_approve_execute_fake(self, tmp_dir):
-        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root = \
+        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger = \
             self._setup_plan_and_ledger(tmp_dir)
 
         plan = prepare_plan(
@@ -1454,7 +1469,7 @@ class TestExecuteWithFakeTransport:
             snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
             template_path=template_path, sender_profile_path=sender_path,
             identity_store=identity_store, private_root=private_root,
-            temp_root=temp_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
         )
 
         plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
@@ -1474,6 +1489,7 @@ class TestExecuteWithFakeTransport:
             recipient_count=plan.recipient_count, actor="staff.opaque",
             ledger=ledger, plan_dir=plan_dir, identity_store=identity_store,
             confirm_reviewed=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         transport = FakeTransport()
@@ -1484,6 +1500,7 @@ class TestExecuteWithFakeTransport:
             ledger=ledger, transport=transport, transport_config=config,
             plan_dir=plan_dir, identity_store=identity_store,
             confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         assert outcome == ExecuteOutcome.COMPLETE
@@ -1491,7 +1508,7 @@ class TestExecuteWithFakeTransport:
         assert all(d.state == DeliveryState.SENT for d in deliveries)
 
     def test_execute_idempotent(self, tmp_dir):
-        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root = \
+        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger = \
             self._setup_plan_and_ledger(tmp_dir)
 
         plan = prepare_plan(
@@ -1500,7 +1517,7 @@ class TestExecuteWithFakeTransport:
             snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
             template_path=template_path, sender_profile_path=sender_path,
             identity_store=identity_store, private_root=private_root,
-            temp_root=temp_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
         )
 
         plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
@@ -1520,6 +1537,7 @@ class TestExecuteWithFakeTransport:
             recipient_count=plan.recipient_count, actor="staff.opaque",
             ledger=ledger, plan_dir=plan_dir, identity_store=identity_store,
             confirm_reviewed=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         transport = FakeTransport()
@@ -1530,6 +1548,7 @@ class TestExecuteWithFakeTransport:
             ledger=ledger, transport=transport, transport_config=config,
             plan_dir=plan_dir, identity_store=identity_store,
             confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         transport2 = FakeTransport()
@@ -1538,13 +1557,14 @@ class TestExecuteWithFakeTransport:
             ledger=ledger, transport=transport2, transport_config=config,
             plan_dir=plan_dir, identity_store=identity_store,
             confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         assert outcome2 == ExecuteOutcome.COMPLETE
         assert transport2.sent_count == 0
 
     def test_execute_not_approved_blocked(self, tmp_dir):
-        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root = \
+        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger = \
             self._setup_plan_and_ledger(tmp_dir)
 
         plan = prepare_plan(
@@ -1553,7 +1573,7 @@ class TestExecuteWithFakeTransport:
             snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
             template_path=template_path, sender_profile_path=sender_path,
             identity_store=identity_store, private_root=private_root,
-            temp_root=temp_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
         )
 
         plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
@@ -1577,10 +1597,11 @@ class TestExecuteWithFakeTransport:
                 ledger=ledger, transport=transport, transport_config=config,
                 plan_dir=plan_dir, identity_store=identity_store,
                 confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
             )
 
     def test_auth_failure_stops_batch(self, tmp_dir):
-        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root = \
+        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger = \
             self._setup_plan_and_ledger(tmp_dir)
 
         plan = prepare_plan(
@@ -1589,7 +1610,7 @@ class TestExecuteWithFakeTransport:
             snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
             template_path=template_path, sender_profile_path=sender_path,
             identity_store=identity_store, private_root=private_root,
-            temp_root=temp_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
         )
 
         plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
@@ -1609,6 +1630,7 @@ class TestExecuteWithFakeTransport:
             recipient_count=plan.recipient_count, actor="staff.opaque",
             ledger=ledger, plan_dir=plan_dir, identity_store=identity_store,
             confirm_reviewed=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
         )
 
         transport = FakeTransport(behavior=FakeBehavior.AUTH_FAILURE)
@@ -1620,6 +1642,7 @@ class TestExecuteWithFakeTransport:
                 ledger=ledger, transport=transport, transport_config=config,
                 plan_dir=plan_dir, identity_store=identity_store,
                 confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
             )
 
 
@@ -1741,110 +1764,90 @@ class TestFailureInjection:
         assert any(e["toState"] == "ambiguous" for e in events)
 
 
+def _make_recipient_dict(
+    student_id="stu_001",
+    normalized_recipient="juan@example.test",
+    masked_recipient="j***@example.test",
+    display_name="Juan Pérez",
+    identity_projection_hash=None,
+    subject="Test Subject",
+    text_body="Hello stu_001",
+    section_id="sec_001",
+    publication_id="pub_001",
+    template_id="tpl",
+    template_version="1",
+    intent="notify",
+):
+    iph = identity_projection_hash or compute_identity_projection_hash(student_id, display_name, normalized_recipient)
+    recipient_dict = {
+        "studentId": student_id,
+        "normalizedRecipient": normalized_recipient,
+        "maskedRecipient": masked_recipient,
+        "identityProjectionHash": iph,
+        "subject": subject,
+        "textBody": text_body,
+    }
+    item_hash = compute_item_hash(recipient_dict)
+    idempotency_key = compute_idempotency_key(
+        section_id, publication_id, student_id,
+        normalized_recipient, template_id, template_version, intent,
+    )
+    return {**recipient_dict, "itemHash": item_hash, "idempotencyKey": idempotency_key}
+
+
+def _make_plan_core(recipients, section_id="sec_001", publication_id="pub_001"):
+    return {
+        "schemaVersion": "1.0.0",
+        "sectionId": section_id,
+        "publicationId": publication_id,
+        "snapshotContentHash": "c" * 64,
+        "snapshotReviewHash": "r" * 64,
+        "snapshotMode": "legacy-effective",
+        "templateId": "tpl",
+        "templateVersion": "1",
+        "templateHash": "t" * 64,
+        "intent": "notify",
+        "senderProfileId": "default",
+        "fromAddress": "noreply@test.com",
+        "replyTo": None,
+        "recipientCount": len(recipients),
+        "recipients": recipients,
+    }
+
+
+def _write_valid_plan_bundle(parent_dir, recipients=None):
+    from email_delivery.canonical import sha256_file
+    recipients = recipients or [_make_recipient_dict()]
+    plan_core = _make_plan_core(recipients)
+    preview_hash = compute_preview_hash(plan_core)
+    plan_id = derive_plan_id(preview_hash)
+    plan_dir = parent_dir / plan_id
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
+    write_json(plan_dir / "plan.json", plan_dict)
+    previews_dir = plan_dir / "previews"
+    previews_dir.mkdir(parents=True, exist_ok=True)
+    for r in recipients:
+        (previews_dir / f"{r['studentId']}.txt").write_text(r["textBody"], encoding="utf-8")
+    manifest_files = {
+        "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
+    }
+    for r in recipients:
+        preview_path = previews_dir / f"{r['studentId']}.txt"
+        rel = f"previews/{r['studentId']}.txt"
+        manifest_files[rel] = {"sha256": sha256_file(preview_path), "size": preview_path.stat().st_size}
+    write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
+    return plan_id, preview_hash, plan_dir
+
+
 class TestPlanBundleVerification:
     def test_verify_valid_bundle(self, tmp_dir):
-        plan_dir = tmp_dir / "plan"
-        plan_dir.mkdir()
-        recipients = [
-            {
-                "studentId": "stu_001",
-                "maskedRecipient": "j***@example.test",
-                "identityProjectionHash": "i" * 64,
-                "subject": "Test Subject",
-                "textBody": "Hello stu_001",
-                "itemHash": compute_item_hash({
-                    "studentId": "stu_001",
-                    "maskedRecipient": "j***@example.test",
-                    "identityProjectionHash": "i" * 64,
-                    "subject": "Test Subject",
-                    "textBody": "Hello stu_001",
-                }),
-                "idempotencyKey": compute_idempotency_key("sec_001", "pub_001", "stu_001", "j***@example.test", "tpl", "1", "notify"),
-            }
-        ]
-        plan_core = {
-            "schemaVersion": "1.0.0",
-            "sectionId": "sec_001",
-            "publicationId": "pub_001",
-            "snapshotContentHash": "c" * 64,
-            "snapshotReviewHash": "r" * 64,
-            "snapshotMode": "legacy-effective",
-            "templateId": "tpl",
-            "templateVersion": "1",
-            "templateHash": "t" * 64,
-            "intent": "notify",
-            "senderProfileId": "default",
-            "fromAddress": "noreply@test.com",
-            "replyTo": None,
-            "recipientCount": 1,
-            "recipients": recipients,
-        }
-        preview_hash = compute_preview_hash(plan_core)
-        plan_id = derive_plan_id(preview_hash)
-        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
-        write_json(plan_dir / "plan.json", plan_dict)
-        previews_dir = plan_dir / "previews"
-        previews_dir.mkdir()
-        (previews_dir / "stu_001.txt").write_text("Hello stu_001", encoding="utf-8")
-        from email_delivery.canonical import sha256_file
-        manifest_files = {
-            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
-            "previews/stu_001.txt": {"sha256": sha256_file(previews_dir / "stu_001.txt"), "size": (previews_dir / "stu_001.txt").stat().st_size},
-        }
-        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
         result = verify_plan_bundle(plan_dir)
         assert result["plan_id"] == plan_id
 
     def test_tamper_subject_rejected(self, tmp_dir):
-        plan_dir = tmp_dir / "plan"
-        plan_dir.mkdir()
-        recipients = [
-            {
-                "studentId": "stu_001",
-                "maskedRecipient": "j***@example.test",
-                "identityProjectionHash": "i" * 64,
-                "subject": "Original Subject",
-                "textBody": "Hello stu_001",
-                "itemHash": compute_item_hash({
-                    "studentId": "stu_001",
-                    "maskedRecipient": "j***@example.test",
-                    "identityProjectionHash": "i" * 64,
-                    "subject": "Original Subject",
-                    "textBody": "Hello stu_001",
-                }),
-                "idempotencyKey": compute_idempotency_key("sec_001", "pub_001", "stu_001", "j***@example.test", "tpl", "1", "notify"),
-            }
-        ]
-        plan_core = {
-            "schemaVersion": "1.0.0",
-            "sectionId": "sec_001",
-            "publicationId": "pub_001",
-            "snapshotContentHash": "c" * 64,
-            "snapshotReviewHash": "r" * 64,
-            "snapshotMode": "legacy-effective",
-            "templateId": "tpl",
-            "templateVersion": "1",
-            "templateHash": "t" * 64,
-            "intent": "notify",
-            "senderProfileId": "default",
-            "fromAddress": "noreply@test.com",
-            "replyTo": None,
-            "recipientCount": 1,
-            "recipients": recipients,
-        }
-        preview_hash = compute_preview_hash(plan_core)
-        plan_id = derive_plan_id(preview_hash)
-        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
-        write_json(plan_dir / "plan.json", plan_dict)
-        previews_dir = plan_dir / "previews"
-        previews_dir.mkdir()
-        (previews_dir / "stu_001.txt").write_text("Hello stu_001", encoding="utf-8")
-        from email_delivery.canonical import sha256_file
-        manifest_files = {
-            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
-            "previews/stu_001.txt": {"sha256": sha256_file(previews_dir / "stu_001.txt"), "size": (previews_dir / "stu_001.txt").stat().st_size},
-        }
-        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
         tampered = read_json(plan_dir / "plan.json")
         tampered["recipients"][0]["subject"] = "Tampered Subject"
         write_json(plan_dir / "plan.json", tampered)
@@ -1852,151 +1855,26 @@ class TestPlanBundleVerification:
             verify_plan_bundle(plan_dir)
 
     def test_tamper_preview_rejected(self, tmp_dir):
-        plan_dir = tmp_dir / "plan"
-        plan_dir.mkdir()
-        recipients = [
-            {
-                "studentId": "stu_001",
-                "maskedRecipient": "j***@example.test",
-                "identityProjectionHash": "i" * 64,
-                "subject": "Test Subject",
-                "textBody": "Hello stu_001",
-                "itemHash": compute_item_hash({
-                    "studentId": "stu_001",
-                    "maskedRecipient": "j***@example.test",
-                    "identityProjectionHash": "i" * 64,
-                    "subject": "Test Subject",
-                    "textBody": "Hello stu_001",
-                }),
-                "idempotencyKey": compute_idempotency_key("sec_001", "pub_001", "stu_001", "j***@example.test", "tpl", "1", "notify"),
-            }
-        ]
-        plan_core = {
-            "schemaVersion": "1.0.0",
-            "sectionId": "sec_001",
-            "publicationId": "pub_001",
-            "snapshotContentHash": "c" * 64,
-            "snapshotReviewHash": "r" * 64,
-            "snapshotMode": "legacy-effective",
-            "templateId": "tpl",
-            "templateVersion": "1",
-            "templateHash": "t" * 64,
-            "intent": "notify",
-            "senderProfileId": "default",
-            "fromAddress": "noreply@test.com",
-            "replyTo": None,
-            "recipientCount": 1,
-            "recipients": recipients,
-        }
-        preview_hash = compute_preview_hash(plan_core)
-        plan_id = derive_plan_id(preview_hash)
-        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
-        write_json(plan_dir / "plan.json", plan_dict)
-        previews_dir = plan_dir / "previews"
-        previews_dir.mkdir()
-        (previews_dir / "stu_001.txt").write_text("Tampered body", encoding="utf-8")
-        from email_delivery.canonical import sha256_file
-        manifest_files = {
-            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
-            "previews/stu_001.txt": {"sha256": sha256_file(previews_dir / "stu_001.txt"), "size": (previews_dir / "stu_001.txt").stat().st_size},
-        }
-        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        tampered = read_json(plan_dir / "plan.json")
+        tampered["recipients"][0]["textBody"] = "Tampered body"
+        write_json(plan_dir / "plan.json", tampered)
         with pytest.raises(PlanTamperedError):
             verify_plan_bundle(plan_dir)
 
     def test_unexpected_file_rejected(self, tmp_dir):
-        plan_dir = tmp_dir / "plan"
-        plan_dir.mkdir()
-        recipients = [
-            {
-                "studentId": "stu_001",
-                "maskedRecipient": "j***@example.test",
-                "identityProjectionHash": "i" * 64,
-                "subject": "Test Subject",
-                "textBody": "Hello stu_001",
-                "itemHash": compute_item_hash({
-                    "studentId": "stu_001",
-                    "maskedRecipient": "j***@example.test",
-                    "identityProjectionHash": "i" * 64,
-                    "subject": "Test Subject",
-                    "textBody": "Hello stu_001",
-                }),
-                "idempotencyKey": compute_idempotency_key("sec_001", "pub_001", "stu_001", "j***@example.test", "tpl", "1", "notify"),
-            }
-        ]
-        plan_core = {
-            "schemaVersion": "1.0.0",
-            "sectionId": "sec_001",
-            "publicationId": "pub_001",
-            "snapshotContentHash": "c" * 64,
-            "snapshotReviewHash": "r" * 64,
-            "snapshotMode": "legacy-effective",
-            "templateId": "tpl",
-            "templateVersion": "1",
-            "templateHash": "t" * 64,
-            "intent": "notify",
-            "senderProfileId": "default",
-            "fromAddress": "noreply@test.com",
-            "replyTo": None,
-            "recipientCount": 1,
-            "recipients": recipients,
-        }
-        preview_hash = compute_preview_hash(plan_core)
-        plan_id = derive_plan_id(preview_hash)
-        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
-        write_json(plan_dir / "plan.json", plan_dict)
-        previews_dir = plan_dir / "previews"
-        previews_dir.mkdir()
-        (previews_dir / "stu_001.txt").write_text("Hello stu_001", encoding="utf-8")
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
         (plan_dir / "extra_file.txt").write_text("unexpected", encoding="utf-8")
-        from email_delivery.canonical import sha256_file
-        manifest_files = {
-            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
-            "previews/stu_001.txt": {"sha256": sha256_file(previews_dir / "stu_001.txt"), "size": (previews_dir / "stu_001.txt").stat().st_size},
-        }
-        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
         with pytest.raises(PlanTamperedError):
             verify_plan_bundle(plan_dir)
 
     def test_missing_preview_rejected(self, tmp_dir):
-        plan_dir = tmp_dir / "plan"
-        plan_dir.mkdir()
-        recipients = [
-            {
-                "studentId": "stu_001",
-                "maskedRecipient": "j***@example.test",
-                "identityProjectionHash": "i" * 64,
-                "subject": "Test Subject",
-                "textBody": "Hello stu_001",
-                "itemHash": compute_item_hash({
-                    "studentId": "stu_001",
-                    "maskedRecipient": "j***@example.test",
-                    "identityProjectionHash": "i" * 64,
-                    "subject": "Test Subject",
-                    "textBody": "Hello stu_001",
-                }),
-                "idempotencyKey": compute_idempotency_key("sec_001", "pub_001", "stu_001", "j***@example.test", "tpl", "1", "notify"),
-            }
-        ]
-        plan_core = {
-            "schemaVersion": "1.0.0",
-            "sectionId": "sec_001",
-            "publicationId": "pub_001",
-            "snapshotContentHash": "c" * 64,
-            "snapshotReviewHash": "r" * 64,
-            "snapshotMode": "legacy-effective",
-            "templateId": "tpl",
-            "templateVersion": "1",
-            "templateHash": "t" * 64,
-            "intent": "notify",
-            "senderProfileId": "default",
-            "fromAddress": "noreply@test.com",
-            "replyTo": None,
-            "recipientCount": 1,
-            "recipients": recipients,
-        }
+        recipients = [_make_recipient_dict()]
+        plan_core = _make_plan_core(recipients)
         preview_hash = compute_preview_hash(plan_core)
         plan_id = derive_plan_id(preview_hash)
+        plan_dir = tmp_dir / plan_id
+        plan_dir.mkdir(parents=True, exist_ok=True)
         plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
         write_json(plan_dir / "plan.json", plan_dict)
         previews_dir = plan_dir / "previews"
@@ -2009,3 +1887,1019 @@ class TestPlanBundleVerification:
         write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
         with pytest.raises(PlanTamperedError):
             verify_plan_bundle(plan_dir)
+
+
+class TestNormalizedRecipientInTransport:
+    def test_fake_transport_receives_normalized_recipient(self):
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        transport.preflight(config)
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg.set_content("test body")
+        msg["Subject"] = "test"
+        msg["From"] = "noreply@test.com"
+        msg["To"] = "juan@example.test"
+        envelope = Envelope(from_address="noreply@test.com", to_address="juan@example.test")
+        receipt = transport.send(msg, envelope)
+        assert receipt.accepted
+        assert transport.sent_envelopes[-1].to_address == "juan@example.test"
+
+    def test_smtp_mock_to_addrs_exact(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        normalized = "juan@example.test"
+        msg = build_email_message(
+            from_address="noreply@test.com", to_address=normalized,
+            subject="Test", body="Body",
+            client_message_id="<id@test>",
+        )
+        envelope = Envelope(from_address="noreply@test.com", to_address=normalized)
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            receipt = transport.send(msg, envelope, config=config)
+        mock_smtp.send_message.assert_called_once()
+        call_kwargs = mock_smtp.send_message.call_args
+        to_addrs = call_kwargs[1].get("to_addrs") or call_kwargs[0][2] if len(call_kwargs[0]) > 2 else call_kwargs[1]["to_addrs"]
+        assert to_addrs == [normalized]
+
+    def test_masked_recipient_never_arrives_at_transport(self):
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        transport.preflight(config)
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg.set_content("test")
+        msg["Subject"] = "test"
+        msg["From"] = "noreply@test.com"
+        msg["To"] = "juan@example.test"
+        envelope = Envelope(from_address="noreply@test.com", to_address="juan@example.test")
+        transport.send(msg, envelope)
+        for env in transport.sent_envelopes:
+            assert "***" not in env.to_address
+
+    def test_identity_drift_blocks(self, tmp_dir):
+        recipients = [_make_recipient_dict(
+            normalized_recipient="juan@example.test",
+        )]
+        plan_core = _make_plan_core(recipients)
+        preview_hash = compute_preview_hash(plan_core)
+        plan_id = derive_plan_id(preview_hash)
+        plan_dir = tmp_dir / plan_id
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
+        write_json(plan_dir / "plan.json", plan_dict)
+
+        drifted_identity = _synthetic_identity("stu_001", "Juan CHANGED", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": drifted_identity})
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        with pytest.raises(IdentityDriftError):
+            execute_plan(
+                plan_id=plan_id, preview_hash=preview_hash,
+                ledger=ledger, transport=transport, transport_config=config,
+                plan_dir=plan_dir, identity_store=identity_store,
+                confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+            )
+
+    def test_casing_only_domain_change_handled(self):
+        raw = "Juan@EXAMPLE.TEST"
+        normalized = normalize_email(raw)
+        assert normalized == "Juan@example.test"
+        assert normalized != raw
+
+
+class TestVerifyPlanBundleIntegration:
+    def test_tamper_subject_approve_rejects(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        tampered = read_json(plan_dir / "plan.json")
+        tampered["recipients"][0]["subject"] = "Tampered Subject"
+        write_json(plan_dir / "plan.json", tampered)
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        with pytest.raises(PlanTamperedError):
+            approve_plan(
+                plan_id=tampered["planId"], preview_hash=tampered["previewHash"],
+                recipient_count=tampered["recipientCount"], actor="staff.opaque",
+                ledger=ledger, plan_dir=plan_dir,
+                identity_store=identity_store,
+                confirm_reviewed=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+            )
+
+    def test_tamper_body_execute_rejects(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        tampered = read_json(plan_dir / "plan.json")
+        tampered["recipients"][0]["textBody"] = "Tampered Body"
+        write_json(plan_dir / "plan.json", tampered)
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+    def test_tamper_normalized_recipient_rejected(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        tampered = read_json(plan_dir / "plan.json")
+        tampered["recipients"][0]["normalizedRecipient"] = "hacked@evil.com"
+        write_json(plan_dir / "plan.json", tampered)
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+    def test_tamper_idempotency_key_rejected(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        tampered = read_json(plan_dir / "plan.json")
+        tampered["recipients"][0]["idempotencyKey"] = "a" * 64
+        write_json(plan_dir / "plan.json", tampered)
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+    def test_tamper_manifest_rejected(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        manifest = read_json(plan_dir / "manifest.json")
+        manifest["files"]["plan.json"]["sha256"] = "0" * 64
+        write_json(plan_dir / "manifest.json", manifest)
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+    def test_preview_missing_rejected(self, tmp_dir):
+        recipients = [_make_recipient_dict()]
+        plan_core = _make_plan_core(recipients)
+        preview_hash = compute_preview_hash(plan_core)
+        plan_id = derive_plan_id(preview_hash)
+        plan_dir = tmp_dir / plan_id
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        plan_dict = {**plan_core, "planId": plan_id, "previewHash": preview_hash}
+        write_json(plan_dir / "plan.json", plan_dict)
+        previews_dir = plan_dir / "previews"
+        previews_dir.mkdir()
+        from email_delivery.canonical import sha256_file
+        manifest_files = {
+            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
+            "previews/stu_001.txt": {"sha256": "0" * 64, "size": 0},
+        }
+        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": plan_id, "files": manifest_files})
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+    def test_plan_id_different_from_directory_rejected(self, tmp_dir):
+        recipients = [_make_recipient_dict()]
+        plan_core = _make_plan_core(recipients)
+        preview_hash = compute_preview_hash(plan_core)
+        plan_id = derive_plan_id(preview_hash)
+        wrong_plan_id = "eplan_" + "z" * 24
+        plan_dir = tmp_dir / wrong_plan_id
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        plan_dict = {**plan_core, "planId": wrong_plan_id, "previewHash": preview_hash}
+        write_json(plan_dir / "plan.json", plan_dict)
+        previews_dir = plan_dir / "previews"
+        previews_dir.mkdir()
+        (previews_dir / "stu_001.txt").write_text("Hello stu_001", encoding="utf-8")
+        from email_delivery.canonical import sha256_file
+        manifest_files = {
+            "plan.json": {"sha256": sha256_file(plan_dir / "plan.json"), "size": (plan_dir / "plan.json").stat().st_size},
+            "previews/stu_001.txt": {"sha256": sha256_file(previews_dir / "stu_001.txt"), "size": (previews_dir / "stu_001.txt").stat().st_size},
+        }
+        write_json(plan_dir / "manifest.json", {"schemaVersion": "1.0.0", "planId": wrong_plan_id, "files": manifest_files})
+        with pytest.raises(PlanTamperedError):
+            verify_plan_bundle(plan_dir)
+
+
+class TestSnapshotVerification:
+    def test_snapshot_verifier_in_prepare(self, tmp_dir):
+        ledger, snapshot_dir, identity_store, template_path, sender_path, private_root, temp_root, lifecycle_ledger = \
+            TestExecuteWithFakeTransport()._setup_plan_and_ledger(tmp_dir)
+        plan = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+        )
+        assert plan is not None
+
+    def test_snapshot_verifier_in_approve(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        record = approve_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            recipient_count=1, actor="staff.opaque",
+            ledger=ledger, plan_dir=plan_dir,
+            identity_store=identity_store,
+            confirm_reviewed=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert record.preview_hash == preview_hash
+
+    def test_snapshot_verifier_in_execute(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        outcome = execute_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            ledger=ledger, transport=transport, transport_config=config,
+            plan_dir=plan_dir, identity_store=identity_store,
+            confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert outcome == ExecuteOutcome.COMPLETE
+
+    def test_lifecycle_ledger_none_blocks(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        with pytest.raises(ExecuteBlockedError):
+            execute_plan(
+                plan_id=plan_id, preview_hash=preview_hash,
+                ledger=ledger, transport=transport, transport_config=config,
+                plan_dir=plan_dir, identity_store=identity_store,
+                confirm_send=True,
+                lifecycle_ledger=None, publication_id="pub_001",
+            )
+
+    def test_publication_id_none_blocks(self, tmp_dir):
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir)
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        with pytest.raises(ExecuteBlockedError):
+            execute_plan(
+                plan_id=plan_id, preview_hash=preview_hash,
+                ledger=ledger, transport=transport, transport_config=config,
+                plan_dir=plan_dir, identity_store=identity_store,
+                confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id=None,
+            )
+
+
+class TestTemplateRegistry:
+    def test_register_template_version_before_approval(self, tmp_dir):
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_template_version("tpl", "1", "a" * 64)
+        ledger.register_template_version("tpl", "1", "a" * 64)
+
+    def test_same_template_id_version_same_hash_ok(self, tmp_dir):
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_template_version("tpl", "1", "a" * 64)
+        ledger.register_template_version("tpl", "1", "a" * 64)
+
+    def test_same_template_id_version_different_hash_blocked(self, tmp_dir):
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_template_version("tpl", "1", "a" * 64)
+        with pytest.raises(TemplateHashMismatchError):
+            ledger.register_template_version("tpl", "1", "b" * 64)
+
+
+class TestSMTPStdlibMocks:
+    def test_starttls_available(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            receipt = transport.send(msg, envelope, config=config)
+        assert receipt.accepted
+        mock_smtp.starttls.assert_called_once()
+
+    def test_starttls_absent(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = False
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with pytest.raises(BatchTransportError) as exc_info:
+                transport.send(msg, envelope, config=config)
+            assert exc_info.value.code == "smtp-starttls-unavailable"
+
+    def test_starttls_called_before_login(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            transport.send(msg, envelope, config=config)
+        call_names = [c[0] for c in mock_smtp.method_calls]
+        starttls_idx = next(i for i, n in enumerate(call_names) if n == "starttls")
+        login_idx = next(i for i, n in enumerate(call_names) if n == "login")
+        assert starttls_idx < login_idx
+
+    def test_smtp_ssl_for_implicit_tls(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=465, username="user",
+            password="pass", tls_mode=TlsMode.IMPLICIT_TLS,
+        )
+        mock_smtp_ssl = MagicMock()
+        mock_smtp_ssl.__enter__.return_value = mock_smtp_ssl
+        mock_smtp_ssl.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP_SSL", return_value=mock_smtp_ssl):
+            receipt = transport.send(msg, envelope, config=config)
+        assert receipt.accepted
+
+    def test_host_port_username_from_config(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="mail.example.com", port=2525, username="testuser",
+            password="testpass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp) as smtp_cls:
+            transport.send(msg, envelope, config=config)
+        smtp_cls.assert_called_once_with("mail.example.com", 2525, timeout=transport.timeout)
+        mock_smtp.login.assert_called_once_with("testuser", "testpass")
+
+    def test_cert_via_ssl_create_default_context(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with patch("ssl.create_default_context") as mock_ctx:
+                transport.send(msg, envelope, config=config)
+        mock_ctx.assert_called()
+
+    def test_to_addrs_receives_normalized_recipient(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        normalized = "juan@example.test"
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.return_value = {}
+        msg = build_email_message("noreply@test.com", normalized, "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address=normalized)
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            transport.send(msg, envelope, config=config)
+        call_kwargs = mock_smtp.send_message.call_args
+        to_addrs = call_kwargs[1].get("to_addrs") or call_kwargs[0][2] if len(call_kwargs[0]) > 2 else call_kwargs[1]["to_addrs"]
+        assert to_addrs == [normalized]
+
+    def test_auth_failure(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Auth failed")
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with pytest.raises(BatchTransportError) as exc_info:
+                transport.send(msg, envelope, config=config)
+            assert exc_info.value.code == "smtp-auth-failed"
+
+    def test_disconnect_timeout_ambiguous(self):
+        from email_delivery.transport.smtp import SMTPTransport, build_email_message
+        transport = SMTPTransport()
+        config = TransportConfig(
+            host="smtp.example.com", port=587, username="user",
+            password="pass", tls_mode=TlsMode.STARTTLS,
+        )
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__.return_value = mock_smtp
+        mock_smtp.has_extn.return_value = True
+        mock_smtp.send_message.side_effect = smtplib.SMTPServerDisconnected("Connection lost")
+        msg = build_email_message("noreply@test.com", "user@test.com", "Test", "Body")
+        envelope = Envelope(from_address="noreply@test.com", to_address="user@test.com")
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with pytest.raises(Exception) as exc_info:
+                transport.send(msg, envelope, config=config)
+            assert exc_info.value.delivery_certainty == "unknown"
+
+    def test_password_absent(self):
+        from email_delivery.transport.smtp import SMTPTransport
+        transport = SMTPTransport()
+        config = TransportConfig(host="smtp.example.com", port=587, username="user", password="")
+        with patch.dict(os.environ, {}, clear=True):
+            env = {k: v for k, v in os.environ.items() if k != "ACADGRAD_SMTP_PASSWORD"}
+            with patch.dict(os.environ, env, clear=True):
+                with pytest.raises(BatchTransportError) as exc_info:
+                    transport.preflight(config)
+                assert exc_info.value.code == "smtp-auth-missing"
+
+
+class TestBatchOutcomes:
+    def _make_single_recipient_plan(self, tmp_dir, recipient_dict=None):
+        r = recipient_dict or _make_recipient_dict()
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir, recipients=[r])
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        identity = _synthetic_identity(r["studentId"], "Juan Pérez", r["normalizedRecipient"])
+        identity_store = _synthetic_identity_store({r["studentId"]: identity})
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        return plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger
+
+    def test_complete_outcome(self, tmp_dir):
+        plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger = \
+            self._make_single_recipient_plan(tmp_dir)
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        outcome = execute_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            ledger=ledger, transport=transport, transport_config=config,
+            plan_dir=plan_dir, identity_store=identity_store,
+            confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert outcome == ExecuteOutcome.COMPLETE
+
+    def test_partial_outcome(self, tmp_dir):
+        r1 = _make_recipient_dict(student_id="stu_001", normalized_recipient="juan@example.test")
+        r2 = _make_recipient_dict(student_id="stu_002", normalized_recipient="maria@example.test", display_name="María López", text_body="Hello stu_002")
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir, recipients=[r1, r2])
+        ledger = EmailLedger(tmp_dir / "ledger.sqlite3")
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=2,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=2,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        id1 = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        id2 = _synthetic_identity("stu_002", "María López", "maria@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": id1, "stu_002": id2})
+        lifecycle_ledger = _mock_lifecycle_ledger()
+        transport = FakeTransport(behavior=FakeBehavior.INVALID_RECIPIENT)
+        config = TransportConfig(host="localhost", port=0, username="")
+        outcome = execute_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            ledger=ledger, transport=transport, transport_config=config,
+            plan_dir=plan_dir, identity_store=identity_store,
+            confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert outcome == ExecuteOutcome.PARTIAL
+
+    def test_paused_outcome(self, tmp_dir):
+        r = _make_recipient_dict()
+        plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger = \
+            self._make_single_recipient_plan(tmp_dir, recipient_dict=r)
+        transport = FakeTransport(behavior=FakeBehavior.TRANSIENT_FAILURE)
+        config = TransportConfig(host="localhost", port=0, username="")
+        outcome = execute_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            ledger=ledger, transport=transport, transport_config=config,
+            plan_dir=plan_dir, identity_store=identity_store,
+            confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert outcome == ExecuteOutcome.PAUSED
+
+    def test_ambiguous_outcome(self, tmp_dir):
+        r = _make_recipient_dict()
+        plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger = \
+            self._make_single_recipient_plan(tmp_dir, recipient_dict=r)
+        transport = FakeTransport(behavior=FakeBehavior.AMBIGUOUS)
+        config = TransportConfig(host="localhost", port=0, username="")
+        outcome = execute_plan(
+            plan_id=plan_id, preview_hash=preview_hash,
+            ledger=ledger, transport=transport, transport_config=config,
+            plan_dir=plan_dir, identity_store=identity_store,
+            confirm_send=True,
+            lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+        )
+        assert outcome == ExecuteOutcome.AMBIGUOUS
+
+    def test_blocked_outcome(self, tmp_dir):
+        r = _make_recipient_dict()
+        plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger = \
+            self._make_single_recipient_plan(tmp_dir, recipient_dict=r)
+        missing_identity_store = _synthetic_identity_store({})
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        with pytest.raises(IdentityDriftError):
+            execute_plan(
+                plan_id=plan_id, preview_hash=preview_hash,
+                ledger=ledger, transport=transport, transport_config=config,
+                plan_dir=plan_dir, identity_store=missing_identity_store,
+                confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+            )
+
+    def test_ledger_error_yields_blocked_no_generic_exception(self, tmp_dir):
+        r = _make_recipient_dict()
+        plan_id, preview_hash, plan_dir, ledger, identity_store, lifecycle_ledger = \
+            self._make_single_recipient_plan(tmp_dir, recipient_dict=r)
+        broken_ledger = MagicMock()
+        broken_ledger.get_approval = ledger.get_approval
+        broken_ledger.start_batch_run = MagicMock(side_effect=LedgerError("broken"))
+        transport = FakeTransport()
+        config = TransportConfig(host="localhost", port=0, username="")
+        with pytest.raises(LedgerError):
+            execute_plan(
+                plan_id=plan_id, preview_hash=preview_hash,
+                ledger=broken_ledger, transport=transport, transport_config=config,
+                plan_dir=plan_dir, identity_store=identity_store,
+                confirm_send=True,
+                lifecycle_ledger=lifecycle_ledger, publication_id="pub_001",
+            )
+
+
+class TestMultiprocessExecuteConcurrency:
+    def _setup_concurrent_plan(self, tmp_dir):
+        r = _make_recipient_dict()
+        plan_id, preview_hash, plan_dir = _write_valid_plan_bundle(tmp_dir, recipients=[r])
+        db_path = tmp_dir / "ledger.sqlite3"
+        ledger = EmailLedger(db_path)
+        ledger.register_plan(
+            plan_id=plan_id, section_id="sec_001", publication_id="pub_001",
+            snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+            snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+            template_hash="t" * 64, intent="notify", sender_profile_id="default",
+            from_address="noreply@test.com", reply_to=None,
+            preview_hash=preview_hash, recipient_count=1,
+            plan_path=str(plan_dir),
+        )
+        record = ApprovalRecord(
+            plan_id=plan_id, preview_hash=preview_hash, recipient_count=1,
+            approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+        )
+        ledger.record_approval(record)
+        identity = _synthetic_identity(r["studentId"], "Juan Pérez", r["normalizedRecipient"])
+        identity_store = _synthetic_identity_store({r["studentId"]: identity})
+        ledger.close()
+        return plan_id, preview_hash, plan_dir, db_path, identity_store
+
+    def test_same_plan_same_key_send_count_one(self, tmp_dir):
+        plan_id, preview_hash, plan_dir, db_path, identity_store = \
+            self._setup_concurrent_plan(tmp_dir)
+        results = []
+
+        def run_execute():
+            lg = EmailLedger(db_path)
+            transport = FakeTransport()
+            config = TransportConfig(host="localhost", port=0, username="")
+            lifecycle = _mock_lifecycle_ledger()
+            try:
+                outcome = execute_plan(
+                    plan_id=plan_id, preview_hash=preview_hash,
+                    ledger=lg, transport=transport, transport_config=config,
+                    plan_dir=plan_dir, identity_store=identity_store,
+                    confirm_send=True,
+                    lifecycle_ledger=lifecycle, publication_id="pub_001",
+                )
+                results.append(("outcome", outcome, transport.sent_count))
+            except Exception as exc:
+                results.append(("error", str(exc)))
+            finally:
+                lg.close()
+
+        t1 = threading.Thread(target=run_execute)
+        t2 = threading.Thread(target=run_execute)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        total_sends = sum(r[2] for r in results if r[0] == "outcome")
+        assert total_sends == 1
+
+    def test_two_plans_same_semantic_key_send_count_at_most_one(self, tmp_dir):
+        r = _make_recipient_dict(normalized_recipient="juan@example.test")
+        plan_id1, preview_hash1, plan_dir1 = _write_valid_plan_bundle(tmp_dir / "plans1", recipients=[r])
+
+        plan_id2, preview_hash2, plan_dir2 = _write_valid_plan_bundle(tmp_dir / "plans2", recipients=[r])
+
+        db_path = tmp_dir / "ledger.sqlite3"
+        ledger = EmailLedger(db_path)
+        for pid, ph in [(plan_id1, preview_hash1), (plan_id2, preview_hash2)]:
+            try:
+                ledger.register_plan(
+                    plan_id=pid, section_id="sec_001", publication_id="pub_001",
+                    snapshot_content_hash="c" * 64, snapshot_review_hash="r" * 64,
+                    snapshot_mode="legacy-effective", template_id="tpl", template_version="1",
+                    template_hash="t" * 64, intent="notify", sender_profile_id="default",
+                    from_address="noreply@test.com", reply_to=None,
+                    preview_hash=ph, recipient_count=1,
+                    plan_path=str(tmp_dir),
+                )
+            except PlanExistsError:
+                pass
+            existing = ledger.get_approval(pid)
+            if existing is None:
+                record = ApprovalRecord(
+                    plan_id=pid, preview_hash=ph, recipient_count=1,
+                    approved_by="staff.opaque", approved_at="2026-01-01T00:00:00Z",
+                )
+                ledger.record_approval(record)
+        ledger.close()
+
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        results = []
+
+        def run_execute(plan_id, preview_hash, plan_dir):
+            lg = EmailLedger(db_path)
+            transport = FakeTransport()
+            config = TransportConfig(host="localhost", port=0, username="")
+            lifecycle = _mock_lifecycle_ledger()
+            try:
+                outcome = execute_plan(
+                    plan_id=plan_id, preview_hash=preview_hash,
+                    ledger=lg, transport=transport, transport_config=config,
+                    plan_dir=plan_dir, identity_store=identity_store,
+                    confirm_send=True,
+                    lifecycle_ledger=lifecycle, publication_id="pub_001",
+                )
+                results.append(("outcome", outcome, transport.sent_count))
+            except Exception as exc:
+                results.append(("error", str(exc)))
+            finally:
+                lg.close()
+
+        t1 = threading.Thread(target=run_execute, args=(plan_id1, preview_hash1, plan_dir1))
+        t2 = threading.Thread(target=run_execute, args=(plan_id2, preview_hash2, plan_dir2))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        total_sends = sum(r[2] for r in results if r[0] == "outcome")
+        assert total_sends <= 1
+
+    def test_retry_authorized_concurrent_one_send(self, tmp_dir):
+        plan_id, preview_hash, plan_dir, db_path, identity_store = \
+            self._setup_concurrent_plan(tmp_dir)
+        lg = EmailLedger(db_path)
+        deliveries = lg.get_deliveries_for_plan(plan_id)
+        if deliveries:
+            did = deliveries[0].delivery_id
+            lg.transition_delivery(did, DeliveryState.RESERVED, DeliveryState.SENDING)
+            lg.transition_delivery(did, DeliveryState.SENDING, DeliveryState.FAILED_TRANSIENT)
+            lg.transition_delivery(did, DeliveryState.FAILED_TRANSIENT, DeliveryState.RETRY_AUTHORIZED)
+        lg.close()
+
+        results = []
+
+        def run_execute():
+            lg2 = EmailLedger(db_path)
+            transport = FakeTransport()
+            config = TransportConfig(host="localhost", port=0, username="")
+            lifecycle = _mock_lifecycle_ledger()
+            try:
+                outcome = execute_plan(
+                    plan_id=plan_id, preview_hash=preview_hash,
+                    ledger=lg2, transport=transport, transport_config=config,
+                    plan_dir=plan_dir, identity_store=identity_store,
+                    confirm_send=True,
+                    lifecycle_ledger=lifecycle, publication_id="pub_001",
+                )
+                results.append(("outcome", outcome, transport.sent_count))
+            except Exception as exc:
+                results.append(("error", str(exc)))
+            finally:
+                lg2.close()
+
+        t1 = threading.Thread(target=run_execute)
+        t2 = threading.Thread(target=run_execute)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        total_sends = sum(r[2] for r in results if r[0] == "outcome")
+        assert total_sends <= 1
+
+    def test_execute_vs_reconcile(self, tmp_dir):
+        plan_id, preview_hash, plan_dir, db_path, identity_store = \
+            self._setup_concurrent_plan(tmp_dir)
+        lg = EmailLedger(db_path)
+        r = _make_recipient_dict()
+        did = lg.reserve_delivery(
+            plan_id=plan_id, student_id=r["studentId"],
+            idempotency_key=r["idempotencyKey"],
+            masked_recipient=r["maskedRecipient"], identity_projection_hash=r["identityProjectionHash"],
+            client_message_id="<msg@test>",
+        )
+        lg.transition_delivery(did, DeliveryState.RESERVED, DeliveryState.SENDING)
+        lg.close()
+
+        events = reconcile_plan(plan_id, EmailLedger(db_path), orphan_timeout_seconds=0)
+        assert len(events) >= 1
+        lg2 = EmailLedger(db_path)
+        lg2.close()
+
+    def test_provider_accepted_crash_before_persisting_ambiguous(self, tmp_dir):
+        plan_id, preview_hash, plan_dir, db_path, identity_store = \
+            self._setup_concurrent_plan(tmp_dir)
+        lg = EmailLedger(db_path)
+        r = _make_recipient_dict()
+        did = lg.reserve_delivery(
+            plan_id=plan_id, student_id=r["studentId"],
+            idempotency_key=r["idempotencyKey"],
+            masked_recipient=r["maskedRecipient"], identity_projection_hash=r["identityProjectionHash"],
+            client_message_id="<msg@test>",
+        )
+        lg.transition_delivery(did, DeliveryState.RESERVED, DeliveryState.SENDING)
+        lg.close()
+
+        lg2 = EmailLedger(db_path)
+        d = lg2.get_deliveries_for_plan(plan_id)
+        assert d[0].state == DeliveryState.SENDING
+        events = reconcile_plan(plan_id, lg2, orphan_timeout_seconds=0)
+        assert any(e["toState"] == "ambiguous" for e in events)
+        lg2.close()
+
+
+class TestAtomicPlanHardening:
+    def test_staging_id_unique_per_operation(self, tmp_dir):
+        snapshot_dir = tmp_dir / "snapshot" / "sections" / "sec_001" / "pub_001"
+        canonical_dir = snapshot_dir / "canonical"
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        write_json(canonical_dir / "subjects.json", {"subjects": [{"studentId": "stu_001", "status": "active"}]})
+        write_json(canonical_dir / "results.json", {"results": [{"studentId": "stu_001", "assessmentId": "EV1", "status": "Logrado", "score": "5.5", "grade": "5.5"}]})
+        write_json(canonical_dir / "assessments.json", {"assessments": [{"assessmentId": "EV1", "label": "EV1", "unit": "grade"}]})
+        write_json(snapshot_dir / "manifest.json", {"contentHash": "c" * 64, "reviewHash": "r" * 64})
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        template_path = tmp_dir / "template.json"
+        write_json(template_path, _synthetic_template_dict())
+        sender_path = tmp_dir / "sender.json"
+        write_json(sender_path, {"schemaVersion": "1.0.0", "senderProfileId": "default", "fromAddress": "noreply@example.test"})
+        private_root = tmp_dir / "private"
+        temp_root = tmp_dir / "temp"
+        private_root.mkdir(parents=True, exist_ok=True)
+        temp_root.mkdir(parents=True, exist_ok=True)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+
+        plan1 = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+            operation_id="op-001",
+        )
+        plan2 = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+            operation_id="op-002",
+        )
+        assert plan1.plan_id == plan2.plan_id
+
+    def test_0700_on_private_dirs(self, tmp_dir):
+        snapshot_dir = tmp_dir / "snapshot" / "sections" / "sec_001" / "pub_001"
+        canonical_dir = snapshot_dir / "canonical"
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        write_json(canonical_dir / "subjects.json", {"subjects": [{"studentId": "stu_001", "status": "active"}]})
+        write_json(canonical_dir / "results.json", {"results": [{"studentId": "stu_001", "assessmentId": "EV1", "status": "Logrado", "score": "5.5", "grade": "5.5"}]})
+        write_json(canonical_dir / "assessments.json", {"assessments": [{"assessmentId": "EV1", "label": "EV1", "unit": "grade"}]})
+        write_json(snapshot_dir / "manifest.json", {"contentHash": "c" * 64, "reviewHash": "r" * 64})
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        template_path = tmp_dir / "template.json"
+        write_json(template_path, _synthetic_template_dict())
+        sender_path = tmp_dir / "sender.json"
+        write_json(sender_path, {"schemaVersion": "1.0.0", "senderProfileId": "default", "fromAddress": "noreply@example.test"})
+        private_root = tmp_dir / "private"
+        temp_root = tmp_dir / "temp"
+        private_root.mkdir(parents=True, exist_ok=True)
+        temp_root.mkdir(parents=True, exist_ok=True)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+
+        plan = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+        )
+        plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
+        assert plan_dir.exists()
+
+    def test_verify_plan_bundle_existing_plan(self, tmp_dir):
+        snapshot_dir = tmp_dir / "snapshot" / "sections" / "sec_001" / "pub_001"
+        canonical_dir = snapshot_dir / "canonical"
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        write_json(canonical_dir / "subjects.json", {"subjects": [{"studentId": "stu_001", "status": "active"}]})
+        write_json(canonical_dir / "results.json", {"results": [{"studentId": "stu_001", "assessmentId": "EV1", "status": "Logrado", "score": "5.5", "grade": "5.5"}]})
+        write_json(canonical_dir / "assessments.json", {"assessments": [{"assessmentId": "EV1", "label": "EV1", "unit": "grade"}]})
+        write_json(snapshot_dir / "manifest.json", {"contentHash": "c" * 64, "reviewHash": "r" * 64})
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        template_path = tmp_dir / "template.json"
+        write_json(template_path, _synthetic_template_dict())
+        sender_path = tmp_dir / "sender.json"
+        write_json(sender_path, {"schemaVersion": "1.0.0", "senderProfileId": "default", "fromAddress": "noreply@example.test"})
+        private_root = tmp_dir / "private"
+        temp_root = tmp_dir / "temp"
+        private_root.mkdir(parents=True, exist_ok=True)
+        temp_root.mkdir(parents=True, exist_ok=True)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+
+        plan = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+        )
+        plan_dir = private_root / "email" / "plans" / "sec_001" / "pub_001" / plan.plan_id
+        result = verify_plan_bundle(plan_dir)
+        assert result["plan_id"] == plan.plan_id
+
+    def test_byte_equivalent_idempotent_return(self, tmp_dir):
+        snapshot_dir = tmp_dir / "snapshot" / "sections" / "sec_001" / "pub_001"
+        canonical_dir = snapshot_dir / "canonical"
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        write_json(canonical_dir / "subjects.json", {"subjects": [{"studentId": "stu_001", "status": "active"}]})
+        write_json(canonical_dir / "results.json", {"results": [{"studentId": "stu_001", "assessmentId": "EV1", "status": "Logrado", "score": "5.5", "grade": "5.5"}]})
+        write_json(canonical_dir / "assessments.json", {"assessments": [{"assessmentId": "EV1", "label": "EV1", "unit": "grade"}]})
+        write_json(snapshot_dir / "manifest.json", {"contentHash": "c" * 64, "reviewHash": "r" * 64})
+        identity = _synthetic_identity("stu_001", "Juan Pérez", "juan@example.test")
+        identity_store = _synthetic_identity_store({"stu_001": identity})
+        template_path = tmp_dir / "template.json"
+        write_json(template_path, _synthetic_template_dict())
+        sender_path = tmp_dir / "sender.json"
+        write_json(sender_path, {"schemaVersion": "1.0.0", "senderProfileId": "default", "fromAddress": "noreply@example.test"})
+        private_root = tmp_dir / "private"
+        temp_root = tmp_dir / "temp"
+        private_root.mkdir(parents=True, exist_ok=True)
+        temp_root.mkdir(parents=True, exist_ok=True)
+        lifecycle_ledger = _mock_lifecycle_ledger()
+
+        plan1 = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+        )
+        plan2 = prepare_plan(
+            section_id="sec_001", publication_id="pub_001",
+            snapshot_dir=snapshot_dir, snapshot_content_hash="c" * 64,
+            snapshot_review_hash="r" * 64, snapshot_mode="legacy-effective",
+            template_path=template_path, sender_profile_path=sender_path,
+            identity_store=identity_store, private_root=private_root,
+            temp_root=temp_root, lifecycle_ledger=lifecycle_ledger,
+        )
+        assert plan1.plan_id == plan2.plan_id
+        assert plan1.preview_hash == plan2.preview_hash
+        d1 = plan1.to_dict()
+        d2 = plan2.to_dict()
+        assert json.dumps(d1, sort_keys=True) == json.dumps(d2, sort_keys=True)

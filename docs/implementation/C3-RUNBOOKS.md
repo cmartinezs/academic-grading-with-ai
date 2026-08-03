@@ -48,6 +48,8 @@ Inspect:
   --confirm-send
 ```
 
+Requires: `lifecycle_ledger` and `identity_store` are resolved automatically by the CLI. Snapshot must be in `approved` state. Identity drift blocks execution.
+
 ## 4. Execute with SMTP
 
 Set environment variables:
@@ -55,24 +57,24 @@ Set environment variables:
 - `ACADGRAD_SMTP_PORT`
 - `ACADGRAD_SMTP_USERNAME`
 - `ACADGRAD_SMTP_PASSWORD`
+- `ACADGRAD_SMTP_TLS_MODE` (optional: `starttls` or `implicitTls`, default: `starttls`)
 
-```bash
-./scripts/email-delivery.sh execute \
-  --plan <planId> \
-  --preview-hash <hash> \
-  --section <sectionId> \
-  --publication <publicationId> \
-  --transport smtp \
-  --confirm-send
-```
+`TransportConfig` is the single authority for SMTP parameters. No re-reading from environment during `send`. Password is incorporated in-memory only; `repr=False`; never serialized or logged.
 
 ## 5. Resume Paused Batch
 
-If execute returned PAUSED (global transient error):
+If execute returned PAUSED (transient failure with no successful sends):
 
 1. Wait for the transient condition to resolve.
 2. Re-run execute with the same planId and previewHash.
 3. Already-sent recipients are skipped idempotently.
+
+Batch outcomes:
+- **COMPLETE**: All recipients sent successfully.
+- **PARTIAL**: Some sent, some failed or blocked.
+- **PAUSED**: Transient failure with no successful sends.
+- **AMBIGUOUS**: At least one delivery with unknown certainty.
+- **BLOCKED**: No sends, all recipients blocked or failed.
 
 ## 6. Resolve Ambiguous
 

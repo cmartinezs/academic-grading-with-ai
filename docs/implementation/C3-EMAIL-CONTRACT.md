@@ -39,8 +39,10 @@ templateIdentity = templateId + "/" + templateVersion
 templateHash     = SHA-256(canonical JSON of template document)
 ```
 
-First registration: `templateId/version → templateHash` in ledger.
-Subsequent: same `templateId/version` with different `templateHash` → **fail closed**.
+Registration via `register_template_version` (called before approval):
+- First registration: `templateId/version → templateHash` in ledger.
+- Same `templateId/version` + same `templateHash` → OK (idempotent).
+- Same `templateId/version` + different `templateHash` → **TemplateHashMismatchError**, operation blocked.
 Content change requires `templateVersion` increment.
 
 ### Placeholders V1
@@ -101,9 +103,16 @@ Content change requires `templateVersion` increment.
 - No two recipients may share the same `studentId`.
 - `previewHash` is computed over the core (excluding `previewHash` itself and `manifest`).
 - `planId` = `"eplan_"` + first 24 hex chars of `previewHash`.
-- Each `itemHash` = SHA-256(canonical JSON of that recipient's payload).
+- Each `itemHash` = SHA-256(canonical JSON of that recipient's payload, including `normalizedRecipient`).
 - Each `idempotencyKey` = SHA-256(sectionId + publicationId + studentId + normalizedRecipient + templateId + templateVersion + intent).
 - `identityProjectionHash` = SHA-256(canonical JSON of {studentId, displayName, contact.email} as used in rendering).
+
+### Recipient Fields in Private Plan
+
+The plan.json under `private_root` contains both `normalizedRecipient` and `maskedRecipient` per recipient:
+
+- **`normalizedRecipient`**: full normalized email. Used by the executor for the SMTP `Envelope` and `To` header. Included in `itemHash` and `previewHash` computation. Used in `idempotencyKey` computation.
+- **`maskedRecipient`**: masked form (e.g. `u***@example.test`). Used only in the SQLite ledger, logs, status output, and reconciliation events. Never used for delivery.
 
 ### Snapshot Mode
 
@@ -132,6 +141,7 @@ Content change requires `templateVersion` increment.
 - Snapshot must still be in `approved` state.
 - `identityProjectionHash` must show no drift.
 - Template version/hash must be valid.
+- `verify_plan_bundle` must pass before approval is recorded.
 - Approval is atomic (single SQLite transaction).
 - Changing any byte of the plan invalidates the approval.
 
@@ -173,14 +183,16 @@ class TransportError(Exception):
 
 ### SMTP V1
 
+- `TransportConfig` is the single authority for SMTP configuration. No re-reading from environment during `send`.
 - `smtplib.SMTP` with `starttls()` or implicit TLS.
 - Certificate verification enabled.
 - One recipient per `send()` call.
 - `EmailMessage` from `email.message`.
 - Subject and headers protected against CRLF injection.
 - `client_message_id` derived deterministically from `idempotencyKey`.
-- Password only from `ACADGRAD_SMTP_PASSWORD` env var.
+- Password sourced from `ACADGRAD_SMTP_PASSWORD` env var or `TransportConfig`; `repr=False` on password field (excluded from `__repr__`); never serialized.
 - No password in CLI args, logs, or versioned files.
+- `SMTPTransport.send` accepts optional `config: TransportConfig` parameter to override per-call.
 
 ### Fake Transport
 

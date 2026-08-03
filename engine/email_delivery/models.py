@@ -125,6 +125,7 @@ class StudentEmailView:
 @dataclass(frozen=True)
 class PlanRecipient:
     student_id: str
+    normalized_recipient: str
     masked_recipient: str
     identity_projection_hash: str
     subject: str
@@ -135,6 +136,7 @@ class PlanRecipient:
     def to_dict(self) -> dict:
         return {
             "studentId": self.student_id,
+            "normalizedRecipient": self.normalized_recipient,
             "maskedRecipient": self.masked_recipient,
             "identityProjectionHash": self.identity_projection_hash,
             "subject": self.subject,
@@ -241,6 +243,9 @@ class TransportConfig:
     tls_mode: TlsMode = TlsMode.STARTTLS
     use_tls: bool = True
     timeout: float = 30.0
+
+    def __repr__(self) -> str:
+        return f"TransportConfig(host={self.host!r}, port={self.port!r}, username={self.username!r}, tls_mode={self.tls_mode!r}, use_tls={self.use_tls!r}, timeout={self.timeout!r})"
 
 
 @dataclass
