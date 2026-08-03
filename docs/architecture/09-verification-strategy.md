@@ -101,6 +101,17 @@ init
 - invalid recipient no detiene destinatarios válidos;
 - logs no filtran PII.
 
+### C3 — Email delivery
+
+- prepare genera plan con previewHash reproducible.
+- approve liga approval al hash exacto; plan modificado post-approval es rechazado.
+- execute con transporte fake produce ledger completo sin envíos reales.
+- idempotency: segundo execute con mismo plan no duplica envíos.
+- reanudación: crash después de N envíos → resume envía solo los restantes.
+- SMTP auth failure detiene batch; transient error no duplica otros.
+- template version change requiere nueva preparación.
+- logs contienen solo idempotencyKey, status, error code; nunca cuerpo ni destinatario completo.
+
 ### BI
 
 - grupos bajo umbral suprimidos;
@@ -204,6 +215,15 @@ Cada corte entrega:
 - riesgos residuales;
 - rollback/compensation probado;
 - lista de desviaciones.
+
+### C3 — Evidencia específica
+
+- Plan de implementación: `docs/implementation/C3-IMPLEMENTATION-PLAN.md`.
+- Contrato de email: `docs/implementation/C3-EMAIL-CONTRACT.md`.
+- Runbooks: `docs/implementation/C3-RUNBOOKS.md`.
+- Suite de tests: `engine/email_delivery/tests/`.
+- CI gate: `.github/workflows/c3.yml`.
+- Verificación final: `docs/implementation/C3-VERIFICATION-REPORT.md`.
 
 ## 10. Definition of Done arquitectónica
 

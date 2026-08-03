@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "1.0.0",
+  "senderProfileId": "staff-default",
+  "fromAddress": "noreply@example.test",
+  "replyTo": "docente@example.test"
+}

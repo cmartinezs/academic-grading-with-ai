@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://academic-grading.ai/schemas/email-plan-v1.json",
+  "title": "Email Plan V1",
+  "type": "object",
+  "required": ["schemaVersion", "planId", "sectionId", "publicationId", "snapshotContentHash", "snapshotReviewHash", "snapshotMode", "templateId", "templateVersion", "templateHash", "intent", "senderProfileId", "fromAddress", "recipientCount", "recipients", "previewHash"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {"type": "string", "const": "1.0.0"},
+    "planId": {"type": "string", "pattern": "^eplan_[0-9a-f]{24,}$"},
+    "sectionId": {"type": "string"},
+    "publicationId": {"type": "string"},
+    "snapshotContentHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "snapshotReviewHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "snapshotMode": {"type": "string", "enum": ["legacy-effective", "grade-policy-effective"]},
+    "templateId": {"type": "string"},
+    "templateVersion": {"type": "string"},
+    "templateHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "intent": {"type": "string"},
+    "senderProfileId": {"type": "string"},
+    "fromAddress": {"type": "string"},
+    "replyTo": {"type": ["string", "null"]},
+    "recipientCount": {"type": "integer", "minimum": 1},
+    "recipients": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["studentId", "normalizedRecipient", "maskedRecipient", "identityProjectionHash", "subject", "textBody", "itemHash", "idempotencyKey"],
+        "additionalProperties": false,
+        "properties": {
+          "studentId": {"type": "string"},
+          "normalizedRecipient": {"type": "string"},
+          "maskedRecipient": {"type": "string"},
+          "identityProjectionHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "subject": {"type": "string", "minLength": 1},
+          "textBody": {"type": "string", "minLength": 1},
+          "itemHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "idempotencyKey": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "previewHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

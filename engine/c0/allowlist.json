@@ -41,6 +41,31 @@
       "path": "engine/grade_policy/tests/**",
       "rules": ["chilean-rut", "email"],
       "reason": "C2 synthetic tests use fictional RUT/email-shaped identifiers in fixtures; secret detection stays active."
+    },
+    {
+      "path": "engine/email_delivery/transport/smtp.py",
+      "rules": ["secret-assignment"],
+      "reason": "SMTP transport reads password from environment variable only; variable is never logged, serialized, or committed."
+    },
+    {
+      "path": "engine/email_delivery/models.py",
+      "rules": ["secret-assignment"],
+      "reason": "TransportConfig.password is a typed field for passing credentials at runtime; never logged or committed."
+    },
+    {
+      "path": "engine/scripts/email_delivery.py",
+      "rules": ["secret-assignment"],
+      "reason": "C3 CLI reads SMTP password from environment variable and passes to TransportConfig in memory only; never logged or committed."
+    },
+    {
+      "path": "engine/email_delivery/tests/**",
+      "rules": ["chilean-rut", "email", "secret-assignment"],
+      "reason": "C3 synthetic tests use fictional RUT/email-shaped identifiers and synthetic password config in fixtures; no real secrets."
+    },
+    {
+      "path": "docs/implementation/C3-*.md",
+      "rules": ["secret-assignment"],
+      "reason": "C3 documentation references the password variable name descriptively; no actual secrets."
     }
   ]
 }
