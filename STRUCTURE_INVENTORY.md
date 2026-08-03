@@ -74,6 +74,8 @@ la existencia de la documentación.
 | `engine/scripts/c0_status.py` | Estado de raíces de datos y scanner del corte C0. |
 | `engine/scripts/publication_snapshot.py` | CLI de snapshots de publicación y lifecycle (C1). |
 | `engine/scripts/publication_snapshot_test.py` | Self-check C1: suite unittest + escenario E2E sintético. |
+| `engine/scripts/portal.py` | CLI C4 (prepare/inspect/approve/publish/verify/status/reconcile/revoke/purge/ledger-check/test). |
+| `engine/scripts/portal_test.py` | Self-check C4: pytest + interop WebCrypto Node + E2E sintético por CLI. |
 | `engine/c0/` | Módulo C0: raíces de datos, identidad opaca, locking, scanner, status, allowlist. |
 | `engine/c0/tests/` | Suite de tests C0 (unittest, stdlib). |
 | `engine/publication/` | Módulo C1: schemas, adaptador legacy, manifest/hashes, builder, lifecycle, compat. |

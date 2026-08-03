@@ -1,6 +1,6 @@
 # C4 Implementation Plan — Secure Student Portal
 
-Estado: IN PROGRESS. Rama: `feat/c4-secure-portal`.
+Estado: IMPLEMENTADO (verificación en `C4-VERIFICATION-REPORT.md`). Rama: `feat/c4-secure-portal`.
 Base: `master` (contiene C3 merge `538c2b425b6e28be59198698d8d1d8cac55717a5`).
 
 Este corte implementa exclusivamente C4 del roadmap
