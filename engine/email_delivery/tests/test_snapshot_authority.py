@@ -24,7 +24,7 @@ from publication import builder
 from publication.clock import Clock
 
 SECTION = "SEC-C3"
-PUBLICATION = "pub_c3_auth"
+PUBLICATION = "pub_c3auth"
 
 
 def _write(path: Path, payload) -> None:
