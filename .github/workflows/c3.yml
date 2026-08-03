@@ -20,9 +20,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest jsonschema pytest-socket
+          pip install -r engine/email_delivery/requirements.txt pytest pytest-socket
 
-      - name: C3 unit tests
+      - name: C3 unit and integration tests
         run: |
           PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v --tb=short -m "not network"
 
@@ -48,11 +48,11 @@ jobs:
 
       - name: C3 failure injection tests
         run: |
-          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Failure" --tb=short
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "Failure or recovery_marker" --tb=short
 
       - name: C3 fake transport integration
         run: |
-          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "ExecuteWithFakeTransport" --tb=short
+          PYTHONPATH=engine python -m pytest engine/email_delivery/tests/ -v -k "ExecuteWithFakeTransport or snapshot_authority" --tb=short
 
       - name: C2 regression
         run: |
@@ -83,7 +83,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest jsonschema pytest-socket
+          pip install -r engine/email_delivery/requirements.txt pytest pytest-socket
 
       - name: C3 tests with socket disabled
         run: |
