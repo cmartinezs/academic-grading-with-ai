@@ -84,23 +84,25 @@ pero no es suficiente por sí solo para reproducir una publicación.
 
 ## Estado de implementación
 
-- **C0** — Autorizado. Implementación en `feat/c0-security-data-boundaries`:
-  límites de almacenamiento, clasificación, identidad opaca, migración segura,
-  scanner de PII/secretos, fixtures sintéticos, workspace status y runbooks.
+- **C0** — COMPLETE / MERGED / VERIFIED. Implementado y fusionado
+  (`feat/c0-security-data-boundaries`): límites de almacenamiento, clasificación,
+  identidad opaca, migración segura, scanner de PII/secretos, fixtures sintéticos,
+  workspace status y runbooks.
   Detalle en [docs/implementation/C0-IMPLEMENTATION-PLAN.md](../implementation/C0-IMPLEMENTATION-PLAN.md).
-- **C1** — Autorizado. Implementación en `feat/c1-publication-snapshot-lifecycle`:
-  snapshots de publicación deterministas e inmutables (manifest, hashes, provenance),
-  staging y promoción atómica, review/approval ligado al hash, ledger de lifecycle
-  append-only y vistas de compatibilidad derivadas de snapshots aprobados. Incluye la
-  corrección de los 55 hallazgos P0 del review: hashes de tres capas (per-file/content/
-  review), locks por sección+publicación, estados estrictos (`nonexistent`), recibo de
-  `published` separado del estado académico, privacidad en CLI, generación de
-  compatibilidad con verificación previa y fallo-cerrado, y reconciliación idempotente
-  post-crash que nunca elimina snapshots promovidos.
+- **C1** — COMPLETE / MERGED / VERIFIED. Implementado y fusionado
+  (`feat/c1-publication-snapshot-lifecycle`): snapshots de publicación deterministas e
+  inmutables (manifest, hashes, provenance), staging y promoción atómica,
+  review/approval ligado al hash, ledger de lifecycle append-only y vistas de
+  compatibilidad derivadas de snapshots aprobados.
   Detalle en [docs/implementation/C1-IMPLEMENTATION-PLAN.md](../implementation/C1-IMPLEMENTATION-PLAN.md).
-- **C2** — Completo y verificado. Grade Policy Engine implementado y mergeado.
-- **C3** — En progreso. Implementación en `feat/c3-email-delivery`:
-  prepare/approve/execute de email, ledger durable, idempotency, templates versionados,
-  taxonomía de errores SMTP y reanudación segura.
-  Detalle en [docs/implementation/C3-IMPLEMENTATION-PLAN.md](../implementation/C3-IMPLEMENTATION-PLAN.md).
-- **C4–C7** — Pendientes. No deben implementarse como parte de C3.
+- **C2** — COMPLETE / MERGED / VERIFIED. Grade Policy Engine implementado, verificado
+  y fusionado.
+- **C3** — COMPLETE / MERGED / VERIFIED. Email delivery implementado, verificado y
+  fusionado. Merge commit:
+  `538c2b425b6e28be59198698d8d1d8cac55717a5`.
+  Detalle en [docs/implementation/C3-IMPLEMENTATION-PLAN.md](../implementation/C3-IMPLEMENTATION-PLAN.md)
+  y [docs/implementation/C3-VERIFICATION-REPORT.md](../implementation/C3-VERIFICATION-REPORT.md).
+- **C4** — IN PROGRESS. Portal seguro en `feat/c4-secure-portal` (esta rama):
+  modo static-encrypted operativo y contrato authenticated con adapter reference.
+  Detalle en [docs/implementation/C4-IMPLEMENTATION-PLAN.md](../implementation/C4-IMPLEMENTATION-PLAN.md).
+- **C5–C7** — PENDING. No deben implementarse como parte de C4.

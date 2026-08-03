@@ -84,6 +84,11 @@ la existencia de la documentación.
 | `engine/email_delivery/schemas/` | Schemas JSON de contrato de plan, preview y ledger de email. |
 | `engine/email_delivery/templates/` | Templates versionados de email. |
 | `engine/email_delivery/tests/` | Suite de tests C3 (unittest + transporte fake). |
+| `engine/portal/` | Módulo C4: proyección estudiante, plan de release, aprobación, cifrado, capabilities, ledger, publishers, receipts y reconciliación. |
+| `engine/portal/schemas/` | Schemas JSON de contratos de portal (StudentPortalView, release plan, hosting profile, receipts). |
+| `engine/portal/hosting/` | Perfiles de hosting: `local_static` y `fake_authenticated` (reference). |
+| `engine/portal/static/` | Aplicación estática (index.html, app.js, styles.css) y sus tests. |
+| `engine/portal/tests/` | Suite de tests C4 (unittest + pytest). |
 | `engine/templates/evaluation-base-template.md` | Plantilla fuente para generar `base.md`. |
 | `engine/templates/evaluation-case-template.md` | Plantilla fuente para generar `form-x/case.md`. |
 | `engine/templates/evaluation-assignments-template.json` | Plantilla fuente para inicializar `assignments.json`. |
@@ -113,6 +118,7 @@ la existencia de la documentación.
 | `scripts/c0-status.sh` | Ejecuta el chequeo de raíces de datos C0. |
 | `scripts/publication-snapshot.sh` | CLI C1 (build/verify/review/approve/status/transition/compatibility [--replace-legacy-aliases]/reconcile/discard) + `test`. |
 | `scripts/email-delivery.sh` | CLI C3 (prepare/approve/execute/status/discard) + `test`. |
+| `scripts/portal.sh` | CLI C4 (prepare/inspect/approve/publish/verify/status/reconcile/revoke/purge/ledger-check) + `test`. |
 
 ## `automation/`
 
@@ -159,6 +165,12 @@ ruta global por snapshots aislados mediante `sectionId/publicationId`.
 | `docs/implementation/C3-EMAIL-CONTRACT.md` | Contratos de plan, preview, approval y ledger de email. |
 | `docs/implementation/C3-RUNBOOKS.md` | Runbooks operativos de C3. |
 | `docs/implementation/C3-VERIFICATION-REPORT.md` | Reporte de verificación final de C3. |
+| `docs/implementation/C4-IMPLEMENTATION-PLAN.md` | Plan de implementación del corte C4. |
+| `docs/implementation/C4-PORTAL-CONTRACT.md` | Contratos de portal: StudentPortalView, release plan, approval, hosting profile, receipts. |
+| `docs/implementation/C4-SECURITY-MODEL.md` | Threat model y decisiones criptográficas de C4. |
+| `docs/implementation/C4-STATE-MACHINE.md` | Estados, transiciones y ledger del release de portal. |
+| `docs/implementation/C4-RUNBOOKS.md` | Runbooks operativos de C4. |
+| `docs/implementation/C4-VERIFICATION-REPORT.md` | Reporte de verificación final de C4. |
 
 ## `.github/workflows/`
 
@@ -167,6 +179,7 @@ ruta global por snapshots aislados mediante `sectionId/publicationId`.
 | `.github/workflows/c0.yml` | Gates C0 en CI: tests, scan estricto, estado de seguridad. |
 | `.github/workflows/c1.yml` | Gates C1 en CI: tests/E2E, regresión C0, scan estricto. |
 | `.github/workflows/c3.yml` | Gates C3 en CI: tests, regresión C0/C1, scan estricto, email dry-run. |
+| `.github/workflows/c4.yml` | Gates C4 en CI: tests, crypto de navegador, no-network, no-secrets, regresiones C0–C3. |
 
 ## `onboarding/`
 

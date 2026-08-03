@@ -73,7 +73,8 @@ C1.
 
 ## C3 — Email prepare/approve/execute
 
-> **Estado: EN PROGRESO** — branch `feat/c3-email-delivery`
+> **Estado: COMPLETE / MERGED / VERIFIED** — merge commit
+> `538c2b425b6e28be59198698d8d1d8cac55717a5`.
 
 ### Alcance
 
@@ -102,6 +103,8 @@ C1; C2 cuando el correo incluya resultados calculados por policy.
 
 ## C4 — Portal seguro
 
+> **Estado: IN PROGRESS** — branch `feat/c4-secure-portal`
+
 ### Alcance
 
 - Proyección individual independiente de 3FN.
@@ -127,6 +130,8 @@ C1 y C0; C2 cuando muestre notas calculadas.
 
 ## C5 — Proyecciones docente y BI
 
+> **Estado: PENDING** — no implementar como parte de C4.
+
 ### Alcance
 
 - Contrato teacher-audit.
@@ -151,6 +156,8 @@ C1 y C2.
 
 ## C6 — Convenciones y documentación operacional
 
+> **Estado: PENDING** — no implementar como parte de C4.
+
 ### Alcance
 
 - `support/` y `raw/` como convenciones opcionales.
@@ -169,6 +176,8 @@ C0.
 - Los runbooks distinguen rollback técnico de acción compensatoria.
 
 ## C7 — Discovery asistido por LLM
+
+> **Estado: PENDING** — no implementar como parte de C4.
 
 ### Alcance
 

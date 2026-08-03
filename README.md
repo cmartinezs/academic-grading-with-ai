@@ -57,6 +57,19 @@ Después de crear una evaluación:
 ./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> prepare
 ./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> approve --hash <PREVIEW_HASH>
 ./scripts/email-delivery.sh --section <SECTION_CODE> --publication <PUB_ID> execute
+# C4: secure student portal from approved publication snapshot
+./scripts/portal.sh prepare \
+  --section <SECTION_CODE> --publication <PUB_ID> \
+  --mode static-encrypted --hosting-profile <file>
+./scripts/portal.sh inspect --release <RELEASE_ID>
+./scripts/portal.sh approve --release <RELEASE_ID> --release-hash <HASH> \
+  --object-count <N> --actor <opaque-audit-id> --confirm-reviewed
+./scripts/portal.sh publish --release <RELEASE_ID> --release-hash <HASH> \
+  --confirm-publish --publisher local-static
+./scripts/portal.sh revoke --release <RELEASE_ID> --actor <opaque-audit-id> \
+  --reason <sanitized-reason> --confirm-revoke
+./scripts/portal.sh purge --release <RELEASE_ID> --actor <opaque-audit-id> \
+  --reason <sanitized-reason> --confirm-purge
 # C1: build a verifiable snapshot of the legacy export and publish it
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> build --publication <PUB_ID>
 ./scripts/publication-snapshot.sh --section <SECTION_CODE> reconcile [--publication <PUB_ID>]
@@ -81,3 +94,9 @@ Después de crear una evaluación:
 - [C3 implementation plan](docs/implementation/C3-IMPLEMENTATION-PLAN.md)
 - [C3 email contract](docs/implementation/C3-EMAIL-CONTRACT.md)
 - [C3 runbooks](docs/implementation/C3-RUNBOOKS.md)
+- [C3 verification report](docs/implementation/C3-VERIFICATION-REPORT.md)
+- [C4 implementation plan](docs/implementation/C4-IMPLEMENTATION-PLAN.md)
+- [C4 portal contract](docs/implementation/C4-PORTAL-CONTRACT.md)
+- [C4 security model](docs/implementation/C4-SECURITY-MODEL.md)
+- [C4 state machine](docs/implementation/C4-STATE-MACHINE.md)
+- [C4 runbooks](docs/implementation/C4-RUNBOOKS.md)
