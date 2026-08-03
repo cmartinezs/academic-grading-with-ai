@@ -54,3 +54,4 @@ onboarding/work/
 **/*.log
 **/*.lock
 **/.tmp/
+engine/portal/static/tests/interop.json
