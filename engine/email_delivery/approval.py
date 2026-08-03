@@ -1,29 +1,27 @@
-"""Approval workflow for C3 email delivery.
+"""Human approval workflow for C3 email delivery.
 
-Approval binds a human reviewer to the exact previewHash of the plan.
-No auto-approval. No --force.
+Approval binds a reviewer to the exact, verified private plan and to the exact
+approved Publication Snapshot that produced it.  No auto-approval and no
+force path exist.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .canonical import compute_preview_hash, read_json
 from .errors import (
     ApprovalMismatchError,
-    AlreadyApprovedError,
     ApprovalError,
     IdentityDriftError,
     NotApprovedError,
     PlanTamperedError,
-    SnapshotTerminalError,
+    SchemaValidationError,
     TemplateHashMismatchError,
 )
 from .models import ApprovalRecord
-
-
-SNAPSHOT_TERMINAL_STATES = frozenset({"revoked", "corrected", "superseded"})
+from .recipients import normalize_email
 
 
 def approve_plan(
@@ -38,71 +36,76 @@ def approve_plan(
     publication_id: Optional[str] = None,
     confirm_reviewed: bool = False,
     clock=None,
+    snapshot_dir: Optional[Path] = None,
 ) -> ApprovalRecord:
     if not confirm_reviewed:
         raise ApprovalError("confirm_reviewed is required for approval.")
-
     if not actor or not actor.strip():
         raise ApprovalMismatchError("actor is required for approval.")
     if "@" in actor:
         raise ApprovalMismatchError("actor must be a non-email audit id.")
-
-    from .plan import verify_plan_bundle
-    try:
-        verified = verify_plan_bundle(plan_dir)
-    except PlanTamperedError as exc:
-        raise PlanTamperedError(f"Plan bundle verification failed: {exc}") from exc
-
-    plan_dict = verified.plan_dict
-    plan_preview_hash = verified.preview_hash
-    plan_recipient_count = verified.recipient_count
-
-    template_id = plan_dict.get("templateId", "")
-    template_version = plan_dict.get("templateVersion", "")
-    template_hash = plan_dict.get("templateHash", "")
-    if template_id and template_version and template_hash:
-        try:
-            ledger.register_template_version(template_id, template_version, template_hash)
-        except TemplateHashMismatchError as exc:
-            raise PlanTamperedError(f"Template registry mismatch: {exc}") from exc
-
-    if plan_preview_hash != preview_hash:
-        raise ApprovalMismatchError(
-            f"previewHash mismatch: plan has {plan_preview_hash}, provided {preview_hash}"
-        )
-
-    if plan_recipient_count != recipient_count:
-        raise ApprovalMismatchError(
-            f"recipientCount mismatch: plan has {plan_recipient_count}, provided {recipient_count}"
-        )
-
+    if snapshot_dir is None:
+        raise ApprovalError("snapshot_dir is required for approval.")
     if lifecycle_ledger is None or publication_id is None:
-        raise ApprovalError("lifecycle_ledger and publication_id are required for approval.")
+        raise ApprovalError(
+            "lifecycle_ledger and publication_id are required for approval."
+        )
 
-    state = lifecycle_ledger.current_state(publication_id)
-    if state in SNAPSHOT_TERMINAL_STATES:
-        raise SnapshotTerminalError(f"Snapshot is in terminal state: {state}")
-    if state != "approved":
-        raise SnapshotTerminalError(f"Snapshot state is {state}, expected approved.")
+    from .lifecycle import verify_email_source_snapshot
+    from .plan import verify_plan_bundle
 
-    if identity_store is not None:
-        _check_identity_drift(plan_dict, identity_store)
+    try:
+        verified_plan = verify_plan_bundle(Path(plan_dir))
+    except (PlanTamperedError, SchemaValidationError) as exc:
+        raise PlanTamperedError("Plan bundle verification failed.") from exc
+
+    plan_dict = verified_plan.plan_dict
+    if verified_plan.plan_id != plan_id:
+        raise ApprovalMismatchError("planId mismatch.")
+    if verified_plan.preview_hash != preview_hash:
+        raise ApprovalMismatchError("previewHash mismatch.")
+    if verified_plan.recipient_count != recipient_count:
+        raise ApprovalMismatchError("recipientCount mismatch.")
+
+    verified_snapshot = verify_email_source_snapshot(
+        snapshot_dir=Path(snapshot_dir),
+        section_id=plan_dict["sectionId"],
+        publication_id=plan_dict["publicationId"],
+        lifecycle_ledger=lifecycle_ledger,
+    )
+    _assert_snapshot_binding(plan_dict, verified_snapshot)
+    if publication_id != plan_dict["publicationId"]:
+        raise ApprovalMismatchError("publicationId does not match approved plan.")
+
+    try:
+        ledger.register_template_version(
+            plan_dict["templateId"],
+            plan_dict["templateVersion"],
+            plan_dict["templateHash"],
+        )
+    except TemplateHashMismatchError as exc:
+        raise PlanTamperedError("Template registry mismatch.") from exc
+
+    if identity_store is None:
+        raise ApprovalError("identity_store is required for approval.")
+    _check_identity_drift(plan_dict, identity_store)
 
     existing = ledger.get_approval(plan_id)
     if existing is not None:
-        if existing.preview_hash == preview_hash:
+        if (
+            existing.preview_hash == preview_hash
+            and existing.recipient_count == recipient_count
+        ):
             return existing
         raise ApprovalMismatchError(
-            "Plan already approved with a different previewHash."
+            "Plan already approved with different immutable inputs."
         )
 
-    approved_at = ""
-    if clock is not None:
-        approved_at = clock.iso()
-    else:
-        from datetime import datetime, timezone
-        approved_at = datetime.now(timezone.utc).isoformat()
-
+    approved_at = (
+        clock.iso()
+        if clock is not None
+        else datetime.now(timezone.utc).isoformat()
+    )
     record = ApprovalRecord(
         plan_id=plan_id,
         preview_hash=preview_hash,
@@ -111,38 +114,55 @@ def approve_plan(
         approved_at=approved_at,
         status="approved",
     )
-
     ledger.record_approval(record)
     return record
 
 
-def verify_approval(
-    plan_id: str,
-    preview_hash: str,
-    ledger,
-) -> ApprovalRecord:
+def verify_approval(plan_id: str, preview_hash: str, ledger) -> ApprovalRecord:
     record = ledger.get_approval(plan_id)
     if record is None:
         raise NotApprovedError(f"No approval found for plan {plan_id}")
     if record.preview_hash != preview_hash:
-        raise ApprovalMismatchError(
-            f"Approval previewHash {record.preview_hash} does not match {preview_hash}"
-        )
+        raise ApprovalMismatchError("Approval previewHash does not match plan.")
     return record
 
 
+def _assert_snapshot_binding(plan_dict: dict, verified_snapshot) -> None:
+    checks = (
+        (verified_snapshot.content_hash, plan_dict.get("snapshotContentHash")),
+        (verified_snapshot.review_hash, plan_dict.get("snapshotReviewHash")),
+        (verified_snapshot.section_id, plan_dict.get("sectionId")),
+        (verified_snapshot.publication_id, plan_dict.get("publicationId")),
+        (verified_snapshot.snapshot_mode, plan_dict.get("snapshotMode")),
+    )
+    if any(actual != expected for actual, expected in checks):
+        raise PlanTamperedError(
+            "Publication Snapshot no longer matches the approved email plan."
+        )
+
+
 def _check_identity_drift(plan_dict: dict, identity_store) -> None:
+    from .canonical import compute_identity_projection_hash
+
     for recipient in plan_dict.get("recipients", []):
         student_id = recipient.get("studentId")
-        stored_hash = recipient.get("identityProjectionHash")
         identity = identity_store.resolve(student_id)
         if identity is None:
-            raise IdentityDriftError(f"studentId {student_id} no longer in IdentityStore.")
+            raise IdentityDriftError(
+                f"studentId {student_id} no longer in IdentityStore."
+            )
         email = (identity.contact or {}).get("email", "")
         display_name = identity.display_name or ""
-        from .canonical import compute_identity_projection_hash
-        current_hash = compute_identity_projection_hash(student_id, display_name, email)
-        if current_hash != stored_hash:
+        try:
+            normalized = normalize_email(email)
+        except Exception as exc:
+            raise IdentityDriftError(
+                f"Identity contact is invalid for {student_id}."
+            ) from exc
+        current_hash = compute_identity_projection_hash(
+            student_id, display_name, normalized
+        )
+        if current_hash != recipient.get("identityProjectionHash"):
             raise IdentityDriftError(
                 f"Identity drift for {student_id}: hash changed."
             )
