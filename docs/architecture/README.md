@@ -23,6 +23,7 @@ El archivo `ANALYSIS_FPY1101_vs_BASE.md` se conserva solo como registro históri
 | [07-grade-policy-contract.md](07-grade-policy-contract.md) | Nuevo; contrato tipado de reglas |
 | [08-migration-strategy.md](08-migration-strategy.md) | Nuevo; evolución compatible desde el workspace actual |
 | [09-verification-strategy.md](09-verification-strategy.md) | Nuevo; estrategia de pruebas y gates |
+| [10-gradeops-ai-relationship.md](10-gradeops-ai-relationship.md) | Activo; define el workspace como implementación agentic de referencia de GradeOps AI |
 | [ADRs](ADRs/) | ADR-0001 a ADR-0011 aprobados (2026-08-01); C0 autorizado para implementación |
 
 ## Línea base validada
@@ -59,6 +60,12 @@ El núcleo no es `results.json` ni el export relacional. El núcleo es un
 `results.json` conserva el rol de contrato canónico de resultados dentro del snapshot,
 pero no es suficiente por sí solo para reproducir una publicación.
 
+## Relación con GradeOps AI
+
+Este workspace conserva deliberadamente una superficie de operación de alta flexibilidad: contexto Markdown, artefactos raw y razonamiento del agente proveedor. Eso permite descubrir comportamiento antes de formalizarlo.
+
+La relación canónica es: **Academic Grading With AI descubre y ejercita comportamiento; GradeOps AI lo estructura, acota e industrializa progresivamente.** Ver [10-gradeops-ai-relationship.md](10-gradeops-ai-relationship.md).
+
 ## Restricciones no negociables
 
 - PII y secretos no se versionan en Git.
@@ -79,8 +86,9 @@ pero no es suficiente por sí solo para reproducir una publicación.
 4. Revisar [07-grade-policy-contract.md](07-grade-policy-contract.md).
 5. Revisar [08-migration-strategy.md](08-migration-strategy.md) y
    [09-verification-strategy.md](09-verification-strategy.md).
-6. ADR-0001 a ADR-0011 aprobados (2026-08-01).
-7. Ejecutar el roadmap C0–C7 de [04-roadmap.md](04-roadmap.md).
+6. Revisar [10-gradeops-ai-relationship.md](10-gradeops-ai-relationship.md).
+7. ADR-0001 a ADR-0011 aprobados (2026-08-01).
+8. Ejecutar el roadmap C0–C7 de [04-roadmap.md](04-roadmap.md).
 
 ## Estado de implementación
 
