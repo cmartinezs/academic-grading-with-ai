@@ -1,0 +1,57 @@
+schema_version: 1
+governance:
+  framework: ADUMUN
+  scope: TEACHING
+  ownership: FOUNDER_PERSONAL
+  operational_status: ACTIVE
+  corporate_ownership: false
+  governed_by_adumun: true
+
+asset:
+  id: academic-grading-with-ai
+  canonical_repo: github://cmartinezs/academic-grading-with-ai
+  role:
+    - teaching-operational-workspace
+    - agentic-reference-implementation
+    - discovery-source
+    - proving-ground
+
+relationship:
+  target_product: gradeops-ai
+  target_repo: github://cmartinezs/grade-ops-ai
+  type:
+    - DISCOVERY_SOURCE_FOR
+    - BEHAVIORAL_REFERENCE_FOR
+    - PROVING_GROUND_FOR
+  merged: false
+  superseded: false
+  legacy: false
+  source_remains_active: true
+
+operating_model:
+  context_driven: true
+  prompt_driven: true
+  provider_agent_examples:
+    - codex
+    - claude
+  primary_inputs:
+    - markdown-context
+    - pdf
+    - office-documents
+    - student-submissions
+    - rubrics
+    - rosters
+  determinism: LOW_TO_MEDIUM
+
+promotion_rule:
+  description: >-
+    Stable, recurring and valuable behavior discovered through Academic Grading With AI
+    may be promoted into GradeOps AI as deterministic domain/application logic, typed
+    bounded agent contracts, explicit human-approval workflows, or structured evidence
+    and lifecycle rules. Exploratory or genuinely interpretive behavior may remain here.
+
+invariant:
+  - governance-scope-does-not-imply-corporate-ownership
+  - personal-or-teaching-assets-can-remain-adumun-governed
+  - discovery-source-is-not-a-legacy-status
+  - gradeops-ai-industrializes-validated-behavior-without-erasing-the-reference-workspace
