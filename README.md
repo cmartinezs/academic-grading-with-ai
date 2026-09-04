@@ -9,6 +9,18 @@ Si llegaste sin contexto, empieza por [Empieza Aquí](START_HERE.es.md).
 > manualmente el estado de Git antes de cada commit y mantén los datos reales en un entorno
 > privado. Consulta [Seguridad y límites de datos](docs/architecture/05-security-and-data-boundaries.md).
 
+## Relación con GradeOps AI
+
+Este workspace es la **implementación agentic de referencia / living behavioral prototype** de GradeOps AI.
+
+Opera principalmente mediante prompts y agentes de proveedor como Codex o Claude, apoyándose fuertemente en contexto Markdown y artefactos académicos raw: enunciados, rúbricas, PDFs, Docs, entregas de estudiantes, planes, evidencia y resultados intermedios. Por eso parte importante de su comportamiento es contextual y model-mediated, no completamente determinista.
+
+Su función es descubrir, ejercitar y validar cómo debe comportarse el flujo académico real. GradeOps AI toma los comportamientos recurrentes y validados y los convierte progresivamente en modelos de dominio explícitos, contratos tipados, workflows deterministas o acotados, estado persistido, evidencia reproducible, gates de aprobación y ejecución agentic auditable.
+
+En síntesis: **Academic Grading With AI descubre y ejercita el comportamiento; GradeOps AI lo industrializa.**
+
+Ver [relación arquitectónica con GradeOps AI](docs/architecture/10-gradeops-ai-relationship.md).
+
 ## Inicio rápido
 
 Desde la raíz del workspace:
